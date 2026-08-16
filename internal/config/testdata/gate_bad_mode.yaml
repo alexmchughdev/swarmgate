@@ -1,0 +1,4 @@
+git:
+  url: "ssh://git@example.com/deploy/stacks.git"
+gate:
+  mode: "sometimes"

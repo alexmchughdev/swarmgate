@@ -1,0 +1,8 @@
+services:
+  app:
+    image: alpine:3.20
+volumes:
+  data: {}
+secrets:
+  token:
+    file: ./token

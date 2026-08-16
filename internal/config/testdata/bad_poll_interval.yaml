@@ -1,0 +1,3 @@
+git:
+  url: "ssh://git@example.com/deploy/stacks.git"
+poll_interval: "soonish"

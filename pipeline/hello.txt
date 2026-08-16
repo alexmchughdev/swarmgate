@@ -1,0 +1,1 @@
+swarmgate pipeline test image

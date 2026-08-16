@@ -1,0 +1,21 @@
+git:
+  url: "ssh://git@example.com/deploy/stacks.git"
+  branch: "release"
+  path: "stacks/"
+  ssh_key_file: "/etc/swarmgate/key"
+  interpolation_vars: ["IMAGE_TAG", "DEPLOY_REGION"]
+poll_interval: "1m"
+events:
+  wake: false
+prune: false
+registry:
+  auth_file: "/etc/swarmgate/docker-config.json"
+gate:
+  enabled: true
+  mode: "abort-cycle"
+  policy_file: "/etc/swarmgate/policy.yaml"
+telemetry:
+  out: "/var/lib/swarmgate/events.jsonl"
+docker:
+  host: "unix:///var/run/docker.sock"
+converge_timeout: "10m"

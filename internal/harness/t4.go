@@ -1,0 +1,315 @@
+package harness
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/docker/docker/api/types/swarm"
+	"github.com/docker/docker/client"
+
+	"github.com/alexmchughdev/swarmgate/internal/spec"
+	"github.com/alexmchughdev/swarmgate/internal/telemetry"
+)
+
+// T4Offsets are the valid --offset values: the point in swarmgate's
+// reconcile cycle, relative to the operator's out-of-band mutation, that a
+// run measures.
+var T4Offsets = []string{"diff", "window", "apply", "after"}
+
+// t4EnvKey is the env var the operator mutation sets, and the marker
+// t4CheckWinner looks for when deciding who won the race.
+const t4EnvKey = "TOCTOU"
+
+// t4VerifyTimeout bounds the final winner-inspect call. It is independent
+// of a run's own --timeout: verification must still happen (best-effort)
+// even after a run has already timed out waiting for convergence.
+const t4VerifyTimeout = 30 * time.Second
+
+// t4MutationTimeout bounds the operator mutation's inspect+update round
+// trip. Independent of the run's own deadline so a trigger that fires right
+// as that deadline expires does not have its mutation call spuriously
+// cancelled by the harness's own orchestration.
+const t4MutationTimeout = 30 * time.Second
+
+// T4Config configures one t4 TOCTOU race campaign.
+type T4Config struct {
+	Repo       string // path to an existing working-tree clone
+	Stack      string // stack name; file is <Stack>.yaml at the repo root
+	Service    string // compose service key within the stack (bare, e.g. "web1" — not stack-qualified; see spec.ServiceName for how it's qualified internally)
+	Offset     string // one of T4Offsets
+	DockerHost string // docker engine host for the operator mutation and verification
+	EventsFile string
+	Timeout    time.Duration
+	Label      string // expected form "events=on" / "events=off"; folded verbatim into Condition
+	Registry   string // prefixed onto Image via imageRef; empty preserves the original nginx-only behavior
+	Image      string // empty defaults to "nginx"
+	Tags       []string
+}
+
+func t4Condition(cfg T4Config) string {
+	return fmt.Sprintf("offset=%s;service=%s;%s", cfg.Offset, cfg.Service, cfg.Label)
+}
+
+// t4ShouldFireOnEvent reports whether e is the trigger point for offset,
+// racing the operator's mutation against swarmgate's own reconcile of
+// service.
+//
+// diff and window are implemented identically: swarmgate emits no signal
+// between "diff computed" and "the first apply call about to start" (see
+// internal/loop/loop.go, StageDiff through StageApply), so the diff event
+// is the only observable boundary marking that window's start. There is no
+// finer-grained trigger to fire "window" on than "fire on diff" — this is
+// intentional, not a placeholder.
+func t4ShouldFireOnEvent(offset string, e telemetry.Event, service string) bool {
+	switch offset {
+	case "diff", "window":
+		return e.Stage == telemetry.StageDiff
+	case "apply":
+		return e.Stage == telemetry.StageApply && e.Service == service
+	case "after":
+		return e.Stage == telemetry.StageConverged
+	default:
+		return false
+	}
+}
+
+// t4Detail composes the Row.Detail string from a run's outcome. revertMS is
+// included only when hasRevert is true (winner == "git" and a drift event
+// was observed before the settling converged event).
+func t4Detail(winner string, detected bool, revertMS int64, hasRevert bool) string {
+	d := fmt.Sprintf("winner=%s;detected=%t", winner, detected)
+	if hasRevert {
+		d += fmt.Sprintf(";revert_ms=%d", revertMS)
+	}
+	return d
+}
+
+// t4API is the slice of the Docker client t4 actually uses: an inspect to
+// read current version/spec plus an update, kept narrow to mirror
+// internal/apply's serviceAPI so tests could substitute it without a live
+// daemon.
+type t4API interface {
+	ServiceInspectWithRaw(ctx context.Context, serviceID string, opts swarm.ServiceInspectOptions) (swarm.Service, []byte, error)
+	ServiceUpdate(ctx context.Context, serviceID string, version swarm.Version, service swarm.ServiceSpec, options swarm.ServiceUpdateOptions) (swarm.ServiceUpdateResponse, error)
+}
+
+// newT4Client connects to the Docker engine at host, or via the standard
+// environment when host is empty.
+func newT4Client(host string) (t4API, error) {
+	opts := []client.Opt{client.FromEnv, client.WithAPIVersionNegotiation()}
+	if host != "" {
+		opts = append(opts, client.WithHost(host))
+	}
+	c, err := client.NewClientWithOpts(opts...)
+	if err != nil {
+		return nil, fmt.Errorf("create docker client: %w", err)
+	}
+	return c, nil
+}
+
+// t4SetOperatorEnv performs the operator's out-of-band mutation: it inspects
+// service for its current version/spec, appends key=value to the container
+// env, and updates. This bypasses git entirely, which is the point.
+func t4SetOperatorEnv(ctx context.Context, api t4API, service, key, value string) error {
+	current, _, err := api.ServiceInspectWithRaw(ctx, service, swarm.ServiceInspectOptions{})
+	if err != nil {
+		return fmt.Errorf("operator mutation: inspect %q: %w", service, err)
+	}
+	mutated := current.Spec
+	cs := swarm.ContainerSpec{}
+	if mutated.TaskTemplate.ContainerSpec != nil {
+		cs = *mutated.TaskTemplate.ContainerSpec
+	}
+	cs.Env = append(append([]string(nil), cs.Env...), fmt.Sprintf("%s=%s", key, value))
+	mutated.TaskTemplate.ContainerSpec = &cs
+	if _, err := api.ServiceUpdate(ctx, current.ID, current.Version, mutated, swarm.ServiceUpdateOptions{}); err != nil {
+		return fmt.Errorf("operator mutation: update %q: %w", service, err)
+	}
+	return nil
+}
+
+// t4CheckWinner inspects service's live spec and reports "operator" if it
+// still carries key=value, "git" otherwise (meaning swarmgate's desired
+// state, which never sets key, is what's live).
+func t4CheckWinner(ctx context.Context, api t4API, service, key, value string) (string, error) {
+	svc, _, err := api.ServiceInspectWithRaw(ctx, service, swarm.ServiceInspectOptions{})
+	if err != nil {
+		return "", fmt.Errorf("verify: inspect %q: %w", service, err)
+	}
+	want := key + "=" + value
+	if svc.Spec.TaskTemplate.ContainerSpec != nil {
+		for _, e := range svc.Spec.TaskTemplate.ContainerSpec.Env {
+			if e == want {
+				return "operator", nil
+			}
+		}
+	}
+	return "git", nil
+}
+
+// t4Runner carries the Docker client across a campaign's runs.
+type t4Runner struct {
+	cfg T4Config
+	api t4API
+}
+
+func newT4Runner(cfg T4Config, api t4API) *t4Runner {
+	return &t4Runner{cfg: cfg, api: api}
+}
+
+// run executes one race: push a legitimate git change to cfg.Service, fire
+// an out-of-band operator mutation at the configured offset relative to
+// swarmgate's reconcile of that push, then watch for convergence and
+// inspect who won.
+func (r *t4Runner) run(runIdx int) Row {
+	cfg := r.cfg
+	// cfg.Service is the bare compose key used inside the generated stack
+	// (t1StackYAML below); everywhere else — API calls, telemetry event
+	// comparisons — needs the stack-qualified name swarmgate itself uses.
+	qualified := spec.ServiceName(cfg.Stack, cfg.Service)
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
+	defer cancel()
+
+	// Tail before push: the trigger point is an event from the SAME cycle
+	// the push causes, so listening must already be in place before the
+	// push exists to be reconciled.
+	events, err := Tail(ctx, cfg.EventsFile)
+	if err != nil {
+		return t4ErrorRow(runIdx, cfg, fmt.Errorf("tail events: %w", err))
+	}
+
+	tags := cfg.Tags
+	if len(tags) == 0 {
+		tags = t1Tags
+	}
+	image := cfg.Image
+	if image == "" {
+		image = "nginx"
+	}
+	stackPath := filepath.Join(cfg.Repo, cfg.Stack+".yaml")
+	stack := t1StackYAML([]t1Service{{Name: cfg.Service, Image: imageRef(cfg.Registry, image, tags[runIdx%len(tags)])}})
+	if err := os.WriteFile(stackPath, []byte(stack), 0o644); err != nil {
+		return t4ErrorRow(runIdx, cfg, fmt.Errorf("write stack file: %w", err))
+	}
+	if _, err := gitCommitAndPush(cfg.Repo, cfg.Stack+".yaml", fmt.Sprintf("t4 run %d", runIdx), true); err != nil {
+		return t4ErrorRow(runIdx, cfg, err)
+	}
+
+	// Phase A: wait for the configured offset's trigger point, discarding
+	// unrelated events in between.
+	fired := false
+	for !fired {
+		select {
+		case e, ok := <-events:
+			if !ok {
+				now := time.Now()
+				return r.settle(runIdx, now, now, false, false, time.Time{})
+			}
+			if t4ShouldFireOnEvent(cfg.Offset, e, qualified) {
+				fired = true
+			}
+		case <-ctx.Done():
+			now := time.Now()
+			return r.settle(runIdx, now, now, false, false, time.Time{})
+		}
+	}
+
+	mutationCtx, mutationCancel := context.WithTimeout(context.Background(), t4MutationTimeout)
+	envValue := fmt.Sprintf("%d", runIdx)
+	err = t4SetOperatorEnv(mutationCtx, r.api, qualified, t4EnvKey, envValue)
+	mutationCancel()
+	if err != nil {
+		return t4ErrorRow(runIdx, cfg, err)
+	}
+	tStart := time.Now()
+
+	// Phase B: keep draining the same channel (do not re-Tail) until
+	// convergence or timeout, tracking any drift event mentioning the
+	// service along the way.
+	detected := false
+	var driftAt time.Time
+	converged := false
+	tEnd := tStart
+drain:
+	for {
+		select {
+		case e, ok := <-events:
+			if !ok {
+				tEnd = time.Now()
+				break drain
+			}
+			if e.Stage == telemetry.StageDrift && e.Service == qualified && !detected {
+				detected = true
+				driftAt = e.T
+			}
+			if e.Stage == telemetry.StageConverged {
+				converged = true
+				tEnd = e.T
+				break drain
+			}
+		case <-ctx.Done():
+			tEnd = time.Now()
+			break drain
+		}
+	}
+
+	return r.settle(runIdx, tStart, tEnd, converged, detected, driftAt)
+}
+
+// settle performs the independent post-hoc verification (step 5) and
+// assembles the Row. Called both when a run genuinely converges/times out
+// and, best-effort, when the trigger event itself never arrived.
+func (r *t4Runner) settle(runIdx int, tStart, tEnd time.Time, converged, detected bool, driftAt time.Time) Row {
+	verifyCtx, cancel := context.WithTimeout(context.Background(), t4VerifyTimeout)
+	defer cancel()
+
+	envValue := fmt.Sprintf("%d", runIdx)
+	qualified := spec.ServiceName(r.cfg.Stack, r.cfg.Service)
+	winner, err := t4CheckWinner(verifyCtx, r.api, qualified, t4EnvKey, envValue)
+	if err != nil {
+		// Verification failing is not one of the defined hard-failure paths
+		// (push, operator mutation call) — report best-effort rather than
+		// discarding the run's timing data.
+		winner = "unknown"
+	}
+
+	var revertMS int64
+	hasRevert := detected && converged && winner == "git" && !driftAt.IsZero()
+	if hasRevert {
+		revertMS = tEnd.Sub(driftAt).Milliseconds()
+	}
+
+	outcome := "timeout"
+	if converged {
+		outcome = "ok"
+	}
+
+	return Row{
+		Scenario: "t4", Condition: t4Condition(r.cfg), Run: runIdx,
+		TStart: tStart, TEnd: tEnd, DurationMS: tEnd.Sub(tStart).Milliseconds(),
+		Outcome: outcome, Detail: t4Detail(winner, detected, revertMS, hasRevert),
+	}
+}
+
+func t4ErrorRow(runIdx int, cfg T4Config, err error) Row {
+	now := time.Now()
+	return Row{
+		Scenario: "t4", Condition: t4Condition(cfg), Run: runIdx,
+		TStart: now, TEnd: now, DurationMS: 0, Outcome: "error", Detail: err.Error(),
+	}
+}
+
+// RunT4 executes the t4 TOCTOU race campaign: n runs, each racing an
+// operator's direct Docker SDK mutation against swarmgate's git-driven
+// reconcile of the same service at the configured offset.
+func RunT4(cfg T4Config, n int, out *CSVWriter) error {
+	api, err := newT4Client(cfg.DockerHost)
+	if err != nil {
+		return err
+	}
+	r := newT4Runner(cfg, api)
+	return Run(out, n, r.run)
+}

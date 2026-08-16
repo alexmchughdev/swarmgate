@@ -1,0 +1,56 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+      - run: make check
+      - run: make build
+
+  # musl canary: binaries must build and test cleanly on Alpine.
+  musl:
+    runs-on: ubuntu-latest
+    container: golang:1.26-alpine
+    steps:
+      - name: Install build prerequisites
+        run: apk add --no-cache make git
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - run: make check
+      - run: make build
+
+  # release builds the static, multi-arch binaries a tag push should
+  # publish. Distinct from the musl job above: musl proves the source
+  # builds and tests cleanly inside an Alpine container; this proves the
+  # already-built binary — compiled on ubuntu-latest, no Alpine involved —
+  # runs standalone on a bare Alpine base image with no Go toolchain
+  # present, which is the actual claim static linking makes.
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0 # release needs full history for `git describe`
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+      - run: make release
+      - name: verify amd64 binary runs on alpine:3.20
+        run: |
+          set -eu
+          dir=$(mktemp -d)
+          tar -xzf dist/swarmgate-*-linux-amd64.tar.gz -C "$dir"
+          bin=$(find "$dir" -name swarmgate)
+          docker run --rm -v "$dir":/release:ro alpine:3.20 "/release/$(basename "$(dirname "$bin")")/swarmgate" version
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: swarmgate-release
+          path: dist/*.tar.gz

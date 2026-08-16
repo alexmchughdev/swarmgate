@@ -1,0 +1,14 @@
+services:
+  web:
+    image: nginx:1.27
+    volumes:
+      - /data:/data
+    depends_on:
+      - db
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: "0.5"
+  db:
+    image: postgres:16
