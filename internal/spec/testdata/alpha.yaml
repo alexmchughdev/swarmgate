@@ -1,0 +1,31 @@
+version: "3.8"
+services:
+  web:
+    image: nginx:1.27
+    deploy:
+      replicas: 3
+    environment:
+      - MODE=prod
+      - SWARMGATE_TEST_UNSET
+    labels:
+      swarmgate.tier: frontend
+      other.vendor: dropped
+    networks:
+      - front
+    ports:
+      - "8443:443"
+      - target: 80
+        published: 8080
+        protocol: udp
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+  worker:
+    image: alpine:3.20
+    environment:
+      QUEUE: jobs
+networks:
+  front: {}

@@ -1,0 +1,3 @@
+services:
+  app:
+    image: registry.example.com/app:${IMAGE_TAG}

@@ -1,0 +1,7 @@
+services:
+  db:
+    image: postgres:16
+    deploy:
+      replicas: 0
+    healthcheck:
+      disable: true

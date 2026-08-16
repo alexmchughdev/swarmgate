@@ -1,0 +1,1 @@
+swarmgate pipeline test image (unsigned variant, distinct content for the tag-repoint race test)

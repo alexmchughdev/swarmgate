@@ -1,0 +1,15 @@
+# harness-hosts.yaml
+# Maps a role name (the harness t3 scenario's --target) to the shell commands
+# that kill and restore it. Roles are not a fixed enum: whatever keys appear
+# here are the valid --target values. Commands are opaque strings executed
+# via `sh -c` on the machine running the harness; they are never parsed or
+# validated beyond their exit code.
+manager:
+  kill: "ssh root@hypervisor qm stop 100"
+  restore: "ssh root@hypervisor qm start 100"
+worker1:
+  kill: "ssh root@hypervisor qm stop 101"
+  restore: "ssh root@hypervisor qm start 101"
+reconciler:
+  kill: "ssh reconciler-host rc-service swarmgate stop"
+  restore: "ssh reconciler-host rc-service swarmgate start"

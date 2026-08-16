@@ -1,0 +1,4 @@
+git:
+  url: "ssh://git@example.com/deploy/stacks.git"
+poll_interval: "30s"
+unknown_top_level_key: true

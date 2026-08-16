@@ -1,0 +1,3 @@
+git:
+  url: "ssh://git@example.com/deploy/stacks.git"
+converge_timeout: "5 minutes"

@@ -1,0 +1,4 @@
+poll_interval: "soonish"
+gate:
+  enabled: true
+  mode: "sometimes"

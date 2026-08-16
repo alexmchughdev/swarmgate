@@ -1,0 +1,13 @@
+{
+  "buildDefinition": {
+    "buildType": "https://github.com/alexmchughdev/swarmgate/pipeline@v1",
+    "externalParameters": {
+      "source": "swarmgate test image pipeline"
+    }
+  },
+  "runDetails": {
+    "builder": {
+      "id": "https://github.com/alexmchughdev/swarmgate/pipeline/build.sh"
+    }
+  }
+}

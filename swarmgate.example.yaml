@@ -1,0 +1,35 @@
+# swarmgate.yaml
+git:
+  url: "ssh://git@host/repo.git"     # required
+  branch: "main"                      # default "main"
+  path: "stacks/"                     # default "." — dir containing *.yaml stack files
+  ssh_key_file: "/etc/swarmgate/key"  # optional; empty = default ssh agent/https
+                                       # (must be mode 0600 — swarmgate refuses
+                                       # a group- or world-readable key file)
+  interpolation_vars: []              # names (not values) of swarmgate's own env
+                                       # vars that stack files may reference via
+                                       # ${VAR}; empty by default. Anyone who can
+                                       # push a stack file can read back whatever
+                                       # a listed variable resolves to — only add
+                                       # names every stack-file author is meant
+                                       # to see the value of.
+poll_interval: "30s"                  # Go duration, default 30s
+events:
+  wake: true                          # default true
+prune: true                           # default true
+registry:
+  auth_file: ""                       # optional path to docker config.json
+                                       # (must also be mode 0600)
+gate:
+  enabled: false                      # default false
+  mode: "per-service"                 # "per-service" | "abort-cycle"
+  policy_file: ""                     # required iff enabled
+telemetry:
+  out: "/var/lib/swarmgate/events.jsonl"  # default "./events.jsonl"
+docker:
+  host: ""                            # default: environment / socket
+converge_timeout: "5m"                # default 5m
+stage_timeout: "30s"                  # default 30s; bounds each individual
+                                       # git/registry/Docker API call before
+                                       # apply, and each apply call — a stuck
+                                       # remote can't hang the whole cycle
