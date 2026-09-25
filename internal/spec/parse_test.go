@@ -2,6 +2,7 @@ package spec
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -869,5 +870,55 @@ func TestParseUnsupportedFields(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error missing %q\nfull error:\n%v", want, err)
 		}
+	}
+}
+
+func TestParseAllowlistedBindMounts(t *testing.T) {
+	root := t.TempDir()
+	allowedDir := filepath.Join(root, "allowed")
+	if err := os.Mkdir(allowedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(allowedDir, "config"), []byte("ok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	socketPath := filepath.Join(root, "docker.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	if err := os.Mkdir(filepath.Join(root, "other"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkDir := filepath.Join(root, "run")
+	if err := os.Symlink(root, linkDir); err != nil {
+		t.Fatal(err)
+	}
+
+	parse := func(src string, roots []string, exact []BindMountAllowance, readOnly bool) error {
+		content := fmt.Sprintf("services:\n  app:\n    image: nginx:1.27\n    volumes:\n      - type: bind\n        source: %s\n        target: /host\n        read_only: %t\n", src, readOnly)
+		_, err := ParseWithBindAllowlist([]source.StackFile{{Name: "app", Content: []byte(content)}}, nil, "", roots, exact)
+		return err
+	}
+	if err := parse(filepath.Join(allowedDir, "config"), []string{allowedDir}, nil, true); err != nil {
+		t.Fatalf("directory root bind: %v", err)
+	}
+	// The configured entry is a socket and /run is a symlink, so this proves
+	// exact entries and symlink resolution work together.
+	if err := parse(filepath.Join(linkDir, "docker.sock"), nil, []BindMountAllowance{{Source: socketPath, ReadOnly: true}}, true); err != nil {
+		t.Fatalf("exact socket bind: %v", err)
+	}
+	if err := parse(socketPath, []string{socketPath}, nil, true); err == nil || !strings.Contains(err.Error(), "is not a directory") {
+		t.Fatalf("non-directory volume_bind_roots entry error = %v", err)
+	}
+	if err := parse(filepath.Join(root, "other"), []string{allowedDir}, nil, true); err == nil || !strings.Contains(err.Error(), "volume_bind_roots") {
+		t.Fatalf("unallowlisted bind error = %v", err)
+	}
+	if err := parse("/", nil, []BindMountAllowance{{Source: "/", ReadOnly: true}}, true); err != nil {
+		t.Fatalf("exact read-only root bind: %v", err)
+	}
+	if err := parse("/", nil, []BindMountAllowance{{Source: "/", ReadOnly: true}}, false); err == nil || !strings.Contains(err.Error(), "volume_bind_roots") {
+		t.Fatalf("writable root bind error = %v", err)
 	}
 }

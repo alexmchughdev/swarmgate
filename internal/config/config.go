@@ -22,17 +22,18 @@ const (
 // Config is the fully resolved swarmgate configuration: file values with
 // environment overrides applied, defaults filled in, and validation passed.
 type Config struct {
-	Git             Git
-	EnvFileRoot     string
-	VolumeBindRoots []string
-	PollInterval    time.Duration
-	Events          Events
-	Prune           bool
-	Registry        Registry
-	Gate            Gate
-	Telemetry       Telemetry
-	Docker          Docker
-	ConvergeTimeout time.Duration
+	Git              Git
+	EnvFileRoot      string
+	VolumeBindRoots  []string
+	VolumeBindMounts []VolumeBindMount
+	PollInterval     time.Duration
+	Events           Events
+	Prune            bool
+	Registry         Registry
+	Gate             Gate
+	Telemetry        Telemetry
+	Docker           Docker
+	ConvergeTimeout  time.Duration
 	// StageTimeout bounds each individual git/registry/Docker API call the
 	// reconcile loop makes before apply (poll, resolve, observe) and each
 	// individual apply call — everything except AwaitConverged, which
@@ -58,6 +59,12 @@ type Git struct {
 	// echoed into telemetry) — empty by default so stack files see no
 	// part of swarmgate's own environment unless explicitly opted in.
 	InterpolationVars []string
+}
+
+// VolumeBindMount authorizes one exact host bind source only when its read-only mode matches.
+type VolumeBindMount struct {
+	Source   string `yaml:"source"`
+	ReadOnly bool   `yaml:"read_only"`
 }
 
 // Events controls reaction to Docker engine events.
@@ -117,10 +124,11 @@ type rawConfig struct {
 	Docker struct {
 		Host string `yaml:"host"`
 	} `yaml:"docker"`
-	ConvergeTimeout string   `yaml:"converge_timeout"`
-	StageTimeout    string   `yaml:"stage_timeout"`
-	EnvFileRoot     string   `yaml:"env_file_root"`
-	VolumeBindRoots []string `yaml:"volume_bind_roots"`
+	ConvergeTimeout  string            `yaml:"converge_timeout"`
+	StageTimeout     string            `yaml:"stage_timeout"`
+	EnvFileRoot      string            `yaml:"env_file_root"`
+	VolumeBindRoots  []string          `yaml:"volume_bind_roots"`
+	VolumeBindMounts []VolumeBindMount `yaml:"volume_bind_mounts"`
 }
 
 // envOverrides maps every SWARMGATE_* variable to its raw config field.
@@ -193,8 +201,9 @@ func Load(path string) (Config, error) {
 	}
 
 	cfg := Config{
-		EnvFileRoot:     raw.EnvFileRoot,
-		VolumeBindRoots: raw.VolumeBindRoots,
+		EnvFileRoot:      raw.EnvFileRoot,
+		VolumeBindRoots:  raw.VolumeBindRoots,
+		VolumeBindMounts: raw.VolumeBindMounts,
 		Git: Git{
 			URL:               raw.Git.URL,
 			Branch:            defaultString(raw.Git.Branch, "main"),
@@ -263,6 +272,19 @@ func (c Config) validate() []error {
 	}
 	if c.StageTimeout < minDuration {
 		errs = append(errs, fmt.Errorf("stage_timeout must be at least %s, got %s", minDuration, c.StageTimeout))
+	}
+	for _, root := range c.VolumeBindRoots {
+		if root == "/" {
+			errs = append(errs, errors.New("volume_bind_roots must not contain /; use volume_bind_mounts for an exact read-only root mount"))
+		}
+	}
+	for _, mount := range c.VolumeBindMounts {
+		if mount.Source == "" {
+			errs = append(errs, errors.New("volume_bind_mounts.source is required"))
+		}
+		if !mount.ReadOnly {
+			errs = append(errs, fmt.Errorf("volume_bind_mounts source %q must set read_only: true", mount.Source))
+		}
 	}
 	return errs
 }

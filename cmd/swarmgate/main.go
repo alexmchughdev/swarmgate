@@ -89,7 +89,7 @@ func run() int {
 	deps := loop.Deps{
 		Source: source.NewGitSource(cfg.Git.URL, cfg.Git.Branch, cfg.Git.Path, cfg.Git.SSHKeyFile),
 		Parse: func(files []source.StackFile) (spec.DesiredState, error) {
-			return spec.ParseWithRoots(files, cfg.Git.InterpolationVars, cfg.EnvFileRoot, cfg.VolumeBindRoots)
+			return spec.ParseWithBindAllowlist(files, cfg.Git.InterpolationVars, cfg.EnvFileRoot, cfg.VolumeBindRoots, bindMountAllowances(cfg.VolumeBindMounts))
 		},
 		Resolve: func(ctx context.Context, d *spec.DesiredState) error {
 			return spec.Resolve(ctx, d, cfg.Registry.AuthFile)

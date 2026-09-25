@@ -2,7 +2,6 @@ package spec
 
 import (
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 
@@ -69,7 +68,7 @@ func FromSwarm(s swarm.Service, networkNames map[string]string) ServiceSpec {
 			if m.Type != mount.TypeVolume && m.Type != mount.TypeBind {
 				continue
 			}
-			out.Volumes = append(out.Volumes, VolumeMount{Source: m.Source, Target: m.Target, ReadOnly: m.ReadOnly})
+			out.Volumes = append(out.Volumes, VolumeMount{Source: m.Source, Target: m.Target, ReadOnly: m.ReadOnly, Bind: m.Type == mount.TypeBind})
 		}
 		for _, c := range cs.Configs {
 			target := ""
@@ -216,12 +215,12 @@ func ToSwarm(s ServiceSpec) swarm.ServiceSpec {
 		cs.Ulimits = append(cs.Ulimits, &container.Ulimit{Name: u.Name, Soft: u.Soft, Hard: u.Hard})
 	}
 	for _, v := range s.Volumes {
-		mountType := mount.TypeVolume
-		if filepath.IsAbs(v.Source) {
-			mountType = mount.TypeBind
+		typ := mount.TypeVolume
+		if v.Bind {
+			typ = mount.TypeBind
 		}
 		cs.Mounts = append(cs.Mounts, mount.Mount{
-			Type: mountType, Source: v.Source, Target: v.Target, ReadOnly: v.ReadOnly,
+			Type: typ, Source: v.Source, Target: v.Target, ReadOnly: v.ReadOnly,
 		})
 	}
 	// Configs/Secrets carry only the name here; ConfigID/SecretID are

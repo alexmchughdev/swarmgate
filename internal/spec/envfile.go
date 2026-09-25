@@ -46,7 +46,7 @@ func resolveStackEnvFiles(f source.StackFile, root string) (source.StackFile, er
 		if !filepath.IsAbs(candidate) {
 			candidate = filepath.Join(root, filepath.FromSlash(candidate))
 		}
-		real, err := resolvePathWithinRoot(candidate, root)
+		real, err := resolveEnvFileWithinRoot(candidate, root)
 		if err != nil {
 			if strings.Contains(err.Error(), "escapes allowed root") {
 				return f, fmt.Errorf("env_file path %q escapes env_file_root", p.Value)
@@ -73,9 +73,9 @@ func resolveStackEnvFiles(f source.StackFile, root string) (source.StackFile, er
 	return f, nil
 }
 
-// resolvePathWithinRoot resolves symlinks in both the allowed root and
+// resolveEnvFileWithinRoot resolves symlinks in both the env_file root and
 // candidate, then checks containment using the resolved absolute paths.
-func resolvePathWithinRoot(candidate, root string) (string, error) {
+func resolveEnvFileWithinRoot(candidate, root string) (string, error) {
 	rootAbs, err := filepath.Abs(root)
 	if err != nil {
 		return "", fmt.Errorf("resolve allowed root: %w", err)
@@ -104,22 +104,6 @@ func resolvePathWithinRoot(candidate, root string) (string, error) {
 		return "", fmt.Errorf("resolved path %q escapes allowed root %q", candidate, root)
 	}
 	return real, nil
-}
-
-func resolveUnderAllowedRoots(candidate string, roots []string) (string, error) {
-	real, err := filepath.EvalSymlinks(candidate)
-	if err != nil {
-		return "", fmt.Errorf("bind mount source %q cannot be resolved: %w", candidate, err)
-	}
-	var rootErrors []string
-	for _, root := range roots {
-		resolved, err := resolvePathWithinRoot(real, root)
-		if err == nil {
-			return resolved, nil
-		}
-		rootErrors = append(rootErrors, err.Error())
-	}
-	return "", fmt.Errorf("bind mount source %q resolves to %q outside configured volume_bind_roots (%s)", candidate, real, strings.Join(rootErrors, "; "))
 }
 
 func mappingValue(n *yaml.Node, key string) *yaml.Node {
