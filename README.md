@@ -122,8 +122,8 @@ git:
                                        # names every stack-file author is meant
                                        # to see the value of.
 env_file_root: "/datavol/env"         # optional host directory for service env_file paths
-volume_bind_roots: []                 # bind-source directories or exact file/socket paths
-volume_bind_mounts: []                # exact read-only bind source exceptions; use for source: /
+volume_bind_roots: []                 # allowed bind source directories (not files or sockets)
+volume_bind_mounts: []                # exact read-only bind sources: single files, sockets, or /
 poll_interval: "30s"                  # Go duration, default 30s
 events:
   wake: true                          # default true
@@ -156,9 +156,9 @@ remain inside the configured root, including through symlinks.
 Unreferenced Swarm configs and secrets are retained after a service
 replacement; cleanup remains an operator-managed task.
 
-Bind mounts are denied unless their source is an absolute path that resolves beneath a `volume_bind_roots` directory or equals a configured exact file or socket entry. Symlinks are resolved before either comparison. `volume_bind_roots` cannot include `/`; to allow the host filesystem for a host-metrics service, configure an exact `volume_bind_mounts` entry with `source: /` and `read_only: true`. Exact entries are read-only by design and do not allow any other host path.
+Bind mounts are denied unless their source is an absolute path that resolves beneath a `volume_bind_roots` directory or exactly equals a `volume_bind_mounts` entry. Symlinks are resolved before either comparison. `volume_bind_roots` entries must be directories and cannot be `/`. Single files, sockets, and `/` itself (for example, for a host-metrics service) go in `volume_bind_mounts`, which only allows the exact path it names and requires `read_only: true`.
 
-For example, this permits services to bind files below `/srv/swarmgate-data` and to consume the Docker socket without opening up other host paths:
+For example, this permits services to bind files below `/srv/swarmgate-data` and to mount the Docker socket, without allowing other host paths:
 
 ```yaml
 volume_bind_roots:
@@ -169,6 +169,8 @@ volume_bind_mounts:
 ```
 
 A stack may then use `/srv/swarmgate-data/app/config.yaml` or `/var/run/docker.sock` as bind sources. A source outside those entries, including one reached through a symlink, is rejected before it is applied.
+
+> **Warning:** allowlisting the Docker socket gives every service that mounts it full control of the host, and `read_only: true` does not change that. Read-only applies to the socket file, not to the Docker API behind it: a container with the socket can start a privileged container and get root on the host. Because anyone who can push a stack file can request the mount, only allowlist the socket when everyone with push access to the stack repository is trusted with root on the Swarm hosts.
 
 Top-level configs may use Compose `file:` declarations. Those paths are
 relative to the stack file in the Git repository, and their bytes are read

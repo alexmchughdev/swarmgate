@@ -905,11 +905,14 @@ func TestParseAllowlistedBindMounts(t *testing.T) {
 		t.Fatalf("directory root bind: %v", err)
 	}
 	// The configured entry is a socket and /run is a symlink, so this proves
-	// exact-file entries and symlink resolution work together.
-	if err := parse(filepath.Join(linkDir, "docker.sock"), []string{socketPath}, nil, true); err != nil {
+	// exact entries and symlink resolution work together.
+	if err := parse(filepath.Join(linkDir, "docker.sock"), nil, []BindMountAllowance{{Source: socketPath, ReadOnly: true}}, true); err != nil {
 		t.Fatalf("exact socket bind: %v", err)
 	}
-	if err := parse(filepath.Join(root, "other"), []string{socketPath}, nil, true); err == nil || !strings.Contains(err.Error(), "volume_bind_roots") {
+	if err := parse(socketPath, []string{socketPath}, nil, true); err == nil || !strings.Contains(err.Error(), "is not a directory") {
+		t.Fatalf("non-directory volume_bind_roots entry error = %v", err)
+	}
+	if err := parse(filepath.Join(root, "other"), []string{allowedDir}, nil, true); err == nil || !strings.Contains(err.Error(), "volume_bind_roots") {
 		t.Fatalf("unallowlisted bind error = %v", err)
 	}
 	if err := parse("/", nil, []BindMountAllowance{{Source: "/", ReadOnly: true}}, true); err != nil {
