@@ -21,7 +21,7 @@ func bindSharedFlags(fs *flag.FlagSet) *sharedFlags {
 	sf := &sharedFlags{}
 	fs.IntVar(&sf.n, "n", 30, "number of runs")
 	fs.StringVar(&sf.out, "out", "results.csv", "results CSV path (appended; header written once)")
-	fs.StringVar(&sf.eventsFile, "events-file", "", "path to swarmgate telemetry JSONL (required by most scenarios; not read by t8, which polls ArgoCD's own status instead)")
+	fs.StringVar(&sf.eventsFile, "events-file", "", "path to swarmgate telemetry JSONL (required by most scenarios; not read by refConverge, which polls ArgoCD's own status instead)")
 	fs.StringVar(&sf.label, "label", "", "freeform condition suffix, e.g. events=on")
 	return sf
 }
@@ -35,7 +35,7 @@ type scenarioCmd struct {
 	name string
 	bind func(fs *flag.FlagSet, sf *sharedFlags) (run func() error)
 	// noEventsFile opts out of the shared --events-file requirement, for
-	// scenarios with no swarmgate telemetry to read at all (t8, which
+	// scenarios with no swarmgate telemetry to read at all (refConverge, which
 	// polls ArgoCD's own Application status instead of swarmgate JSONL).
 	noEventsFile bool
 }

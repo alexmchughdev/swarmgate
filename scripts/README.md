@@ -36,13 +36,12 @@ Before running any scenario below:
   `swarmgate` process, since every extra instance polls and reconciles
   the same Docker daemon concurrently, corrupting measurements with
   unrelated apply/converge activity and API contention (see
-  `internal/harness.CheckNoStraySwarmgate`; this is what actually
-  happened during this project's own pre-public review — seven abandoned
-  processes left running from unrelated demos caused a real campaign
-  run to fail with Docker API timeouts). The check only catches extra
-  *processes*; it cannot see whether the cluster itself still carries
-  services or networks left over from an earlier, unrelated session —
-  before a campaign whose results need to be trusted, check by hand:
+  `internal/harness.CheckNoStraySwarmgate`; seven abandoned processes left
+  running from unrelated demos once caused a real run to fail with Docker
+  API timeouts). The check only catches extra *processes*; it cannot see
+  whether the cluster itself still carries services or networks left over
+  from an earlier, unrelated session — before a run whose results need to
+  be trusted, check by hand:
   - `docker service ls` — must be empty (or contain only the instance
     under test's own services, if it's already deployed something).
   - `docker network ls` — no leftover `<stack>_default` overlay networks
@@ -50,47 +49,46 @@ Before running any scenario below:
     is harmless (nothing reconciles against it), but it's the same class
     of debris as the stray processes above and a sign the host wasn't
     actually clean going in.
-- **`docker network rm` is not sufficient cleanup between campaigns —
-  roll back to a clean snapshot instead.** Docker/Moby can leak the
-  kernel-level network namespace mount backing an overlay network past
+- **`docker network rm` is not sufficient cleanup between runs sharing a
+  cluster — roll back to a clean snapshot instead.** Docker/Moby can leak
+  the kernel-level network namespace mount backing an overlay network past
   its removal from `docker network ls`, on every node that ever ran a
   task on it — confirmed surviving both `docker network rm` and a full
-  daemon restart (see `docs/contentions.md`, 2026-07-20). A later
-  network that happens to be auto-allocated the same subnet (common: on
-  a lightly-used cluster there's usually only one overlay network live
-  at allocation time, so Docker's IPAM hands out the same first-available
-  range every time) then fails every attempt to attach a *new* container
-  with `"invalid pool request: Pool overlaps with other one on this
-  address space"` — a failure mode that only shows up for drift/update
-  kinds whose repair allocates a fresh attachment (e.g. an image change)
-  and not ones that don't (e.g. a pure replica scale-down), making it
-  look like a per-scenario flake rather than the shared-cluster problem
-  it actually is. Nothing in `docker network ls`/`docker service ls`
-  reveals a leaked mount, so eyeballing cluster state clean is not
-  sufficient evidence that it is. **Between any two campaigns sharing
-  one cluster, roll every affected VM back to a known-clean Proxmox
-  snapshot (`qm rollback` from `root@pve`) rather than hand-cleaning
-  cluster state** — this is the only remediation confirmed reliable, and
-  it's what makes campaign results defensible against "was the cluster
-  actually clean" in a way in-guest cleanup commands cannot.
+  daemon restart. A later network that happens to be auto-allocated the
+  same subnet (common: on a lightly-used cluster there's usually only one
+  overlay network live at allocation time, so Docker's IPAM hands out the
+  same first-available range every time) then fails every attempt to
+  attach a *new* container with `"invalid pool request: Pool overlaps
+  with other one on this address space"` — a failure mode that only shows
+  up for drift/update kinds whose repair allocates a fresh attachment
+  (e.g. an image change) and not ones that don't (e.g. a pure replica
+  scale-down), making it look like a per-scenario flake rather than the
+  shared-cluster problem it actually is. Nothing in `docker network
+  ls`/`docker service ls` reveals a leaked mount, so eyeballing cluster
+  state clean is not sufficient evidence that it is. **Between any two
+  runs sharing one cluster, roll every affected VM back to a known-clean
+  Proxmox snapshot (`qm rollback` from `root@pve`) rather than
+  hand-cleaning cluster state** — this is the only remediation confirmed
+  reliable, and it's what makes results defensible against "was the
+  cluster actually clean" in a way in-guest cleanup commands cannot.
 - A real registry/cluster reachable from both the harness and the
   `swarmgate` instance under test, per each scenario's own requirements
   below.
 
-## harness t1
+## harness scale
 
-Convergence-time campaign: each run bumps `--changes` service image tags in
-a stack, commits (and by default pushes), then measures time from push to
-the matching `converged` telemetry event.
+Convergence-time run: each iteration bumps `--changes` service image tags
+in a stack, commits (and by default pushes), then measures time from push
+to the matching `converged` telemetry event.
 
 Requires a running `swarmgate` instance reconciling `--repo`'s remote, with
 its `telemetry.out` pointed at the file passed to `--events-file`.
 
 ```sh
 make build
-./dist/harness t1 \
+./dist/harness scale \
   --repo /path/to/working/clone \
-  --stack t1 \
+  --stack scale \
   --scale 1 \
   --changes 1 \
   --events-file /path/to/events.jsonl \
@@ -99,26 +97,26 @@ make build
   -n 5
 ```
 
-- `--scale` and `--changes` sweep independently across a campaign (e.g.
-  `--scale 10 --changes 1`, `--scale 50 --changes 5`) to trace convergence
-  time against fleet size and change volume.
+- `--scale` and `--changes` sweep independently across a series of runs
+  (e.g. `--scale 10 --changes 1`, `--scale 50 --changes 5`) to trace
+  convergence time against fleet size and change volume.
 - `--label` records which `swarmgate` config produced the run (typically
   `events=on` or `events=off`, matching whether `events.wake` was enabled)
   — the harness does not control the daemon's config itself.
 - `--push false` suits a local bare-remote setup where `git push` would be
   a same-host no-op; the commit alone is enough for `swarmgate` to poll.
 
-## harness t2
+## harness drift
 
-Drift detect/repair campaign: each run applies one direct Docker SDK
+Drift detect/repair run: each iteration applies one direct Docker SDK
 mutation to a live service, bypassing git entirely, then measures time to
 the matching `drift` event (detect) and, for four of the five kinds, the
 following `converged` event (repair).
 
 ```sh
-./dist/harness t2 \
+./dist/harness drift \
   --drift image \
-  --service t1_web1 \
+  --service scale_web1 \
   --events-file /path/to/events.jsonl \
   --out results.csv \
   --label events=on \
@@ -127,7 +125,7 @@ following `converged` event (repair).
 
 - `--drift replicas|image|env|removed|unmanaged` selects the mutation kind
   (the same vocabulary as the `drift` telemetry event's `kind` field).
-- `--service` is the full qualified service name (e.g. `t1_web1`); for
+- `--service` is the full qualified service name (e.g. `scale_web1`); for
   `--drift unmanaged` it is instead the *base* name given to a freshly
   created decoy service (unique per run).
 - `--drift unmanaged` only makes sense against a `swarmgate` instance
@@ -139,12 +137,14 @@ following `converged` event (repair).
   `poll_interval`; it is used only for the `unmanaged` case's post-wait
   verification window.
 
-## harness t3
+## harness fault
 
 Node/process fault injection: kills a manager, worker, or the reconciler
 itself mid-cycle (via an opaque `ssh`/`sh -c` command from a hosts config),
 awaits convergence, restores, and independently verifies the live cluster
-against what was pushed (the FR17 "believed-state" false-ok check).
+against what was pushed (a believed-state false-ok check: did the
+reconciler ever report `converged` while the live cluster had actually
+diverged from what was pushed).
 
 Requires SSH-reachable hosts distinct from where the harness runs — a
 single-node dev machine cannot exercise this scenario meaningfully; see
@@ -152,7 +152,7 @@ single-node dev machine cannot exercise this scenario meaningfully; see
 
 ```sh
 cp harness-hosts.example.yaml my-hosts.yaml   # edit kill/restore commands for your cluster
-./dist/harness t3 \
+./dist/harness fault \
   --hosts-config my-hosts.yaml \
   --target worker1 \
   --restore-after 60s \
@@ -171,36 +171,32 @@ cp harness-hosts.example.yaml my-hosts.yaml   # edit kill/restore commands for y
   its own timer, whichever fires first.
 - Each run's convergence wait is fixed at 10 minutes (not a flag), per the
   scenario's own long-tail failure-recovery premise.
-- `Detail` encodes `false_ok=true|false` (has the reconciler ever reported
-  `converged` while the live cluster actually diverged from what was
-  pushed), `readout=event|poll` (see below), plus any
-  `kill_error`/`restore_error`/`verify_error` segments.
+- `Detail` encodes `false_ok=true|false` (see above), `readout=event|poll`
+  (see below), plus any `kill_error`/`restore_error`/`verify_error`
+  segments.
 - **The `reconciler` target (killing swarmgate's own process, not a VM)
   cannot rely on the `converged` telemetry event.** Kill fires on the
   `apply` event, which is emitted after the action it describes already
   succeeded — so the fault always lands on an already-converged commit, and
   swarmgate only emits `converged` for a cycle that changed something
   (`internal/loop/loop.go`). The restarted process's next poll finds an
-  empty diff and never re-emits one. `t3Runner.run` special-cases this
+  empty diff and never re-emits one. `faultRunner.run` special-cases this
   target: it polls live state directly (`readout=poll` in `Detail`) instead
   of waiting on the event stream (`readout=event`, every other target).
-  See `docs/contentions.md`'s 2026-07-20 entry for the full diagnosis —
-  this is a real gap in using telemetry to self-observe convergence, not a
+  This is a real gap in using telemetry to self-observe convergence, not a
   harness bug, and has implications for how convergence claims should be
-  scoped in write-ups that use this data.
+  scoped when this data is used elsewhere.
 - **Restoring a killed VM via the Proxmox API does not guarantee its Docker
   daemon comes back up.** `qm start`-equivalent restarts were observed
   leaving `docker` stopped despite being in the guest's OpenRC `default`
-  runlevel (see `docs/contentions.md`). Any VM-kill restore command should
-  explicitly wait for SSH and then `rc-service docker start` (idempotent)
-  rather than trusting the boot sequence — `pve-vm.sh`'s pattern in the
-  evaluation infra repo is the reference implementation. A worker/manager
-  target's recorded `duration_ms` reflects time to cluster-level recovery
-  (Swarm rescheduling onto a surviving node), which can complete before the
-  killed node itself has finished coming back — not "time for the killed
-  node to rejoin."
+  runlevel. Any VM-kill restore command should explicitly wait for SSH and
+  then `rc-service docker start` (idempotent) rather than trusting the
+  boot sequence. A worker/manager target's recorded `duration_ms` reflects
+  time to cluster-level recovery (Swarm rescheduling onto a surviving
+  node), which can complete before the killed node itself has finished
+  coming back — not "time for the killed node to rejoin."
 
-## harness t4
+## harness race
 
 TOCTOU race: races a direct operator mutation (an out-of-band env set)
 against swarmgate's own reconcile of a concurrent, legitimate git push to
@@ -208,7 +204,7 @@ the same service, firing the operator's change at a configurable point in
 the cycle.
 
 ```sh
-./dist/harness t4 \
+./dist/harness race \
   --offset apply \
   --service web1 \
   --repo /path/to/working/clone \
@@ -220,9 +216,9 @@ the cycle.
 
 - `--service` is the bare compose service key within the stack (e.g.
   `web1`), not stack-qualified — the harness qualifies it internally
-  (`spec.ServiceName(stack, service)`, e.g. `t4_web1` for the default
-  `--stack t4`) everywhere it needs to match a live service or a telemetry
-  event's `Service` field.
+  (`spec.ServiceName(stack, service)`, e.g. `race_web1` for the default
+  `--stack race`) everywhere it needs to match a live service or a
+  telemetry event's `Service` field.
 - `--offset diff|window|apply|after` is the trigger point relative to the
   push's own reconcile cycle. `diff` and `window` fire at the same
   observable point (the `diff` telemetry event) — there is no finer
@@ -238,18 +234,18 @@ the cycle.
   sequence, since its own trigger is deferred until the first cycle's
   `converged` event.
 
-## harness t5
+## harness latency
 
 Registry latency toggle: injects network delay or unreachability at a
 remote registry host via `tc netem` / `iptables` over SSH, then runs
-ordinary t1-style push-and-await samples under that condition.
+ordinary scale-style push-and-await samples under that condition.
 
 Requires an SSH-reachable registry host distinct from where the harness
 runs — a single-node dev machine cannot exercise this scenario
 meaningfully.
 
 ```sh
-./dist/harness t5 \
+./dist/harness latency \
   --latency 500ms \
   --registry-host user@registry-host \
   --iface eth0 \
@@ -268,21 +264,21 @@ meaningfully.
 - The condition is applied once per harness invocation (not once per run)
   and restored once at the end, always, regardless of how the `-n` runs
   went.
-- `unreachable` campaigns should expect `timeout` outcomes — that is the
+- `unreachable` runs should expect `timeout` outcomes — that is the
   scenario working as intended, not a harness failure.
 
-## harness t6
+## harness verify
 
 Gate scenarios: points a stack service at one of the `pipeline/build.sh`
 fixture images (see `pipeline/README.md`) and records the observed
 verify/converge outcome. Requires `pipeline/build.sh --registry <host:port>`
-to have already run against the registry — t6 does not build or sign
+to have already run against the registry — `verify` does not build or sign
 anything itself, only reads what's already there — and a swarmgate instance
 under test configured with `gate.enabled: true` and a `gate.policy_file`
 trusting `pipeline/keys/cosign.pub`.
 
 ```sh
-./dist/harness t6 \
+./dist/harness verify \
   --case ok \
   --registry localhost:5000 \
   --repo /path/to/working/clone \
@@ -346,29 +342,29 @@ unsigned digest, computes an image-drift update, and rejects it again —
 the originally deployed (signed) digest never changes for as long as the
 tag stays pointed at unsigned content.
 
-## harness t8
+## harness refConverge
 
-ArgoCD/RKE2 quantitative reference, T1-equivalent: reproduces T1's
-scale/changes convergence-timing matrix against ArgoCD instead of
-swarmgate, so the two can be compared on the same measurement definition
-(harness-observed git push to the target platform's own externally-visible
-healthy state — see `docs/build-log.md`'s T8 section for the exact
-wording). Renders a Kubernetes `Deployment` manifest set instead of a
-compose stack; measures convergence via the ArgoCD `Application` resource's
-own `.status.sync`/`.status.health` fields, polled through `kubectl`, never
-ArgoCD's internal reconciliation timestamps.
+ArgoCD/RKE2 quantitative reference, equivalent to the `scale` scenario:
+reproduces `scale`'s scale/changes convergence-timing matrix against ArgoCD
+instead of swarmgate, so the two can be compared on the same measurement
+definition (harness-observed git push to the target platform's own
+externally-visible healthy state). Renders a Kubernetes `Deployment`
+manifest set instead of a compose stack; measures convergence via the
+ArgoCD `Application` resource's own `.status.sync`/`.status.health`
+fields, polled through `kubectl`, never ArgoCD's internal reconciliation
+timestamps.
 
 Requires an ArgoCD `Application` already created and pointed at `--stack`
 (a fixed path within `--repo` — unlike swarmgate's `git.path`, an
 Application's source path can't be varied per-run, so every condition in a
-campaign must share one `--stack`, sequentially, the same way T1's own
-`--stack` stays fixed across its scale/changes sweep).
+series of runs must share one `--stack`, sequentially, the same way
+`scale`'s own `--stack` stays fixed across its scale/changes sweep).
 
 ```sh
-./dist/harness t8 \
+./dist/harness refConverge \
   --repo /path/to/argocd-watched/clone \
-  --stack t8 \
-  --app-name t8 \
+  --stack refConverge \
+  --app-name refConverge \
   --namespace argocd \
   --scale 10 \
   --changes 5 \
@@ -377,7 +373,7 @@ campaign must share one `--stack`, sequentially, the same way T1's own
   --tags v1,v2,v3 \
   --trigger-refresh \
   --out results.csv \
-  --label t1-equivalent \
+  --label scale-equivalent \
   -n 30
 ```
 
@@ -385,30 +381,30 @@ campaign must share one `--stack`, sequentially, the same way T1's own
   refresh right after each push, standing in for a webhook notification —
   without it, ArgoCD only notices a new commit on its own periodic
   reconciliation timer (minutes by default), which is fine for measuring
-  the poll-only case specifically but impractical for a full campaign's
+  the poll-only case specifically but impractical for a full run's
   wall-clock time otherwise.
-- No `--events-file`: t8 (and t9, below) poll ArgoCD's own status instead
-  of tailing swarmgate telemetry, so `--events-file` is not required for
-  these two scenarios specifically (every other scenario still requires
-  it).
+- No `--events-file`: `refConverge` (and `refDrift`, below) poll ArgoCD's
+  own status instead of tailing swarmgate telemetry, so `--events-file` is
+  not required for these two scenarios specifically (every other scenario
+  still requires it).
 
-## harness t9
+## harness refDrift
 
-ArgoCD/RKE2 quantitative reference, T2-equivalent: drift detection and
-repair against ArgoCD instead of swarmgate. Pushes a fixed single-deployment
-baseline, injects one out-of-band drift directly against the live cluster
-(bypassing git entirely, matching T2's own direct-Docker-API mutations),
-then polls the Application's status for `OutOfSync` (detect) and back to
-`Synced`+`Healthy` (repair, via ArgoCD's own `syncPolicy.automated.selfHeal`
-— already required on the Application under test, the direct analogue of
-swarmgate's reconcile loop needing no separate trigger to correct drift
-once noticed).
+ArgoCD/RKE2 quantitative reference, equivalent to the `drift` scenario:
+drift detection and repair against ArgoCD instead of swarmgate. Pushes a
+fixed single-deployment baseline, injects one out-of-band drift directly
+against the live cluster (bypassing git entirely, matching `drift`'s own
+direct-Docker-API mutations), then polls the Application's status for
+`OutOfSync` (detect) and back to `Synced`+`Healthy` (repair, via ArgoCD's
+own `syncPolicy.automated.selfHeal` — already required on the Application
+under test, the direct analogue of swarmgate's reconcile loop needing no
+separate trigger to correct drift once noticed).
 
 ```sh
-./dist/harness t9 \
+./dist/harness refDrift \
   --repo /path/to/argocd-watched/clone \
-  --stack t8 \
-  --app-name t8 \
+  --stack refConverge \
+  --app-name refConverge \
   --namespace argocd \
   --drift replicas \
   --deployment web1 \
@@ -416,17 +412,18 @@ once noticed).
   --image eval-workload \
   --trigger-refresh \
   --out results.csv \
-  --label t2-equivalent \
+  --label drift-equivalent \
   -n 30
 ```
 
-- `--drift replicas|image|env|removed` — the four T2 drift kinds with a
+- `--drift replicas|image|env|removed` — the four `drift` kinds with a
   direct native K8s equivalent (`kubectl scale`/`set image`/`set env`/
-  `delete`, respectively). T2's fifth kind, `unmanaged`, has no t9
-  implementation: it tests something much closer to true-by-construction
-  given how ArgoCD scopes "managed" (its own Application-tracked resources
-  plus an auto-applied ownership label, not a broader always-on scan the
-  way swarmgate's `swarmgate.managed=true` label works) — see
-  `docs/build-log.md`'s drift-kind mapping table for the full reasoning.
-- Emits two rows per run (`detect`, `repair`), matching t2's own row-pair
-  shape exactly.
+  `delete`, respectively). `drift`'s fifth kind, `unmanaged`, has no
+  `refDrift` implementation: it tests something much closer to
+  true-by-construction given how ArgoCD scopes "managed" (its own
+  Application-tracked resources plus an auto-applied ownership label, not
+  a broader always-on scan the way swarmgate's `swarmgate.managed=true`
+  label works).
+- Emits two rows per run (`detect`, `repair`), matching `drift`'s own
+  row-pair shape exactly.
+</content>

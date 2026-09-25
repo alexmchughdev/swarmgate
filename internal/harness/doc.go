@@ -1,2 +1,2 @@
-// Package harness drives evaluation scenarios against a running swarmgate instance.
+// Package harness drives measurement scenarios against a running swarmgate instance.
 package harness

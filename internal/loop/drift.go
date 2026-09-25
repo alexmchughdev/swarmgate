@@ -76,7 +76,7 @@ func (st *cycleState) takeHint(service string, since time.Time) bool {
 // update from its changed fields, in the differ's own priority order
 // (image, replicas, env). Updates whose only changes are outside that set
 // (labels, networks, ports, healthcheck) have no representable drift kind
-// and are not reported — a known gap, see docs/contentions.md.
+// and are not reported — a known gap.
 func driftKindForUpdate(changed []string) (string, bool) {
 	for _, c := range changed {
 		switch c {

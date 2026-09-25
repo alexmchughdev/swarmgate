@@ -14,8 +14,11 @@ type Change struct {
 	Name string
 	Old  spec.ServiceSpec
 	New  spec.ServiceSpec
-	// Changed lists the differing fields in a fixed order:
-	// image, replicas, env, labels, networks, ports, healthcheck.
+	// Changed lists the differing fields in a fixed order: image,
+	// replicas, env, labels, networks, ports, healthcheck, command,
+	// entrypoint, hostname, cap_add, user, stop_grace_period, ulimits,
+	// volumes, configs, secrets, mode, restart_policy, resources,
+	// placement, update_config.
 	Changed []string
 }
 
@@ -38,7 +41,7 @@ func (d Diff) Empty() bool {
 
 // Compute is a pure function of the two states: desired-only services land
 // in Creates, observed-only in Removes, and services present on both sides
-// with any FR4 field difference in Updates.
+// with any modelled field difference in Updates.
 func Compute(desired spec.DesiredState, observed spec.ObservedState) Diff {
 	var d Diff
 	for _, name := range sortedKeys(desired.Services) {
@@ -82,6 +85,51 @@ func changedFields(want, have spec.ServiceSpec) []string {
 	}
 	if !reflect.DeepEqual(want.Healthcheck, have.Healthcheck) {
 		changed = append(changed, "healthcheck")
+	}
+	if !slices.Equal(want.Command, have.Command) {
+		changed = append(changed, "command")
+	}
+	if !slices.Equal(want.Entrypoint, have.Entrypoint) {
+		changed = append(changed, "entrypoint")
+	}
+	if want.Hostname != have.Hostname {
+		changed = append(changed, "hostname")
+	}
+	if !slices.Equal(want.CapAdd, have.CapAdd) {
+		changed = append(changed, "cap_add")
+	}
+	if want.User != have.User {
+		changed = append(changed, "user")
+	}
+	if want.StopGracePeriod != have.StopGracePeriod {
+		changed = append(changed, "stop_grace_period")
+	}
+	if !slices.Equal(want.Ulimits, have.Ulimits) {
+		changed = append(changed, "ulimits")
+	}
+	if !slices.Equal(want.Volumes, have.Volumes) {
+		changed = append(changed, "volumes")
+	}
+	if !slices.Equal(want.Configs, have.Configs) {
+		changed = append(changed, "configs")
+	}
+	if !slices.Equal(want.Secrets, have.Secrets) {
+		changed = append(changed, "secrets")
+	}
+	if want.Mode != have.Mode {
+		changed = append(changed, "mode")
+	}
+	if !reflect.DeepEqual(want.RestartPolicy, have.RestartPolicy) {
+		changed = append(changed, "restart_policy")
+	}
+	if !reflect.DeepEqual(want.Resources, have.Resources) {
+		changed = append(changed, "resources")
+	}
+	if !reflect.DeepEqual(want.Placement, have.Placement) {
+		changed = append(changed, "placement")
+	}
+	if !reflect.DeepEqual(want.UpdateConfig, have.UpdateConfig) {
+		changed = append(changed, "update_config")
 	}
 	return changed
 }

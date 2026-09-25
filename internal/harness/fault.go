@@ -23,40 +23,40 @@ import (
 	"github.com/alexmchughdev/swarmgate/internal/telemetry"
 )
 
-// t3ConvergeTimeout bounds how long a t3 run waits for the apply event that
+// faultConvergeTimeout bounds how long a fault run waits for the apply event that
 // follows its push and, from there, for the matching converged event. Fixed
 // rather than a flag: the plan calls for a long, per-run constant window,
 // not an operator-tunable one.
-const t3ConvergeTimeout = 10 * time.Minute
+const faultConvergeTimeout = 10 * time.Minute
 
-// t3FinalVerifyTimeout bounds the one-time post-loop verify call used for
-// the FR17 false_ok check. Unbounded here would have the same hang risk as
-// t3PollLiveConverged's own per-check calls (see its comment): the target
+// faultFinalVerifyTimeout bounds the one-time post-loop verify call used for
+// the believed-state false_ok check. Unbounded here would have the same hang risk as
+// faultPollLiveConverged's own per-check calls (see its comment): the target
 // this run's DockerHost talks to may still be settling right after
 // restore, and a bad connection attempt against it can hang rather than
 // fail cleanly.
-const t3FinalVerifyTimeout = 10 * time.Second
+const faultFinalVerifyTimeout = 10 * time.Second
 
-// t3ReconcilerTarget is the conventional hosts-config key for killing the
+// faultReconcilerTarget is the conventional hosts-config key for killing the
 // reconciler process itself (as opposed to a VM hosting it), matching the
 // name used throughout this package's docs and examples. It gets a
-// different await strategy in t3Runner.run; see the comment at its use.
-const t3ReconcilerTarget = "reconciler"
+// different await strategy in faultRunner.run; see the comment at its use.
+const faultReconcilerTarget = "reconciler"
 
-// t3PollLiveConvergePollInterval is the fixed cadence t3PollLiveConverged
+// faultPollLiveConvergePollInterval is the fixed cadence faultPollLiveConverged
 // re-inspects live state at. Not a flag: this readout path exists only for
 // the reconciler target's specific telemetry gap, not as a general-purpose
 // tunable.
-const t3PollLiveConvergePollInterval = 2 * time.Second
+const faultPollLiveConvergePollInterval = 2 * time.Second
 
-// t3PollLiveConverged directly inspects live state on a fixed cadence until
+// faultPollLiveConverged directly inspects live state on a fixed cadence until
 // it matches what was pushed, or deadline passes. It exists for targets
 // where the normal converged-event wait can never succeed: see its call
-// site in t3Runner.run. Unlike the event-driven path, "converged" here
+// site in faultRunner.run. Unlike the event-driven path, "converged" here
 // means "observed already at desired state," which may be true from the
 // very first check if the underlying fault never actually diverged the
 // live cluster from what was pushed.
-func t3PollLiveConverged(ctx context.Context, cfg T3Config, stackContent string, deadline time.Time) (converged bool, at time.Time) {
+func faultPollLiveConverged(ctx context.Context, cfg FaultConfig, stackContent string, deadline time.Time) (converged bool, at time.Time) {
 	for {
 		// Each check gets its own bounded timeout, not ctx directly: right
 		// after a kill, the target this run's DockerHost talks to may be
@@ -66,8 +66,8 @@ func t3PollLiveConverged(ctx context.Context, cfg T3Config, stackContent string,
 		// block the whole loop indefinitely regardless of deadline, since
 		// deadline is only ever consulted between calls, never able to
 		// interrupt one already in flight.
-		checkCtx, cancel := context.WithTimeout(ctx, t3PollLiveConvergePollInterval)
-		desired, observed, err := t3Verify(checkCtx, cfg, stackContent)
+		checkCtx, cancel := context.WithTimeout(ctx, faultPollLiveConvergePollInterval)
+		desired, observed, err := faultVerify(checkCtx, cfg, stackContent)
 		cancel()
 		if err == nil && reflect.DeepEqual(desired, observed) {
 			return true, time.Now()
@@ -76,7 +76,7 @@ func t3PollLiveConverged(ctx context.Context, cfg T3Config, stackContent string,
 			return false, time.Time{}
 		}
 		select {
-		case <-time.After(t3PollLiveConvergePollInterval):
+		case <-time.After(faultPollLiveConvergePollInterval):
 		case <-ctx.Done():
 			return false, time.Time{}
 		}
@@ -111,10 +111,10 @@ func LoadHostsConfig(path string) (hostsConfig, error) {
 	return cfg, nil
 }
 
-// t3ResolveTarget looks up target's host action. The config file's keys are
+// faultResolveTarget looks up target's host action. The config file's keys are
 // the valid --target set, so this is the only validation --target gets;
 // the error lists what was actually configured so a typo is obvious.
-func t3ResolveTarget(hosts hostsConfig, target string) (hostAction, error) {
+func faultResolveTarget(hosts hostsConfig, target string) (hostAction, error) {
 	a, ok := hosts[target]
 	if !ok {
 		keys := make([]string, 0, len(hosts))
@@ -127,16 +127,16 @@ func t3ResolveTarget(hosts hostsConfig, target string) (hostAction, error) {
 	return a, nil
 }
 
-// ValidateT3Target reports whether target is a configured role, so callers
+// ValidateFaultTarget reports whether target is a configured role, so callers
 // (the cmd/harness wiring) can fail fast on a bad --target before doing any
 // other setup, mirroring how other scenarios validate flags before running.
-func ValidateT3Target(hosts hostsConfig, target string) error {
-	_, err := t3ResolveTarget(hosts, target)
+func ValidateFaultTarget(hosts hostsConfig, target string) error {
+	_, err := faultResolveTarget(hosts, target)
 	return err
 }
 
-// T3Config configures one t3 node/process fault campaign.
-type T3Config struct {
+// FaultConfig configures one node/process fault-injection run.
+type FaultConfig struct {
 	Repo         string // path to an existing working-tree git clone
 	Stack        string // stack name; file is <Stack>.yaml at the repo root
 	Service      string // compose service key within the stack
@@ -150,7 +150,7 @@ type T3Config struct {
 	Image        string // empty defaults to "nginx"
 	Tags         []string
 	// PollReadout forces the direct-live-state-poll convergence readout
-	// (see t3PollLiveConverged) instead of waiting on the events stream.
+	// (see faultPollLiveConverged) instead of waiting on the events stream.
 	// Always true for target "reconciler" regardless of this field (a
 	// structural property of that target: see the comment at its use).
 	// Set this explicitly for other targets whose events file is itself
@@ -163,51 +163,51 @@ type T3Config struct {
 	PollReadout bool
 }
 
-func t3Condition(target string, restoreAfter time.Duration, label string) string {
+func faultCondition(target string, restoreAfter time.Duration, label string) string {
 	return fmt.Sprintf("target=%s;restore_after=%s;%s", target, restoreAfter, label)
 }
 
-// t3FalseOK implements the FR17 false-ok predicate: a run is false_ok only
+// faultFalseOK implements the believed-state false-ok predicate: a run is false_ok only
 // when the reconciler reported convergence and an independent inspection of
 // the live service disagrees with what was pushed. "Never converged" is an
 // honest failure, not a false ok, so it is excluded up front.
-func t3FalseOK(desired, observed spec.ServiceSpec, converged bool) bool {
+func faultFalseOK(desired, observed spec.ServiceSpec, converged bool) bool {
 	if !converged {
 		return false
 	}
 	return !reflect.DeepEqual(desired, observed)
 }
 
-// t3Runner carries one campaign's fixed configuration; unlike t1 it has no
+// faultRunner carries one run's fixed configuration; unlike scale it has no
 // cross-run mutable state beyond the run index itself (the image tag cycle
 // is a pure function of runIdx).
-type t3Runner struct {
-	cfg    T3Config
+type faultRunner struct {
+	cfg    FaultConfig
 	action hostAction
 }
 
-func newT3Runner(cfg T3Config, action hostAction) *t3Runner {
-	return &t3Runner{cfg: cfg, action: action}
+func newFaultRunner(cfg FaultConfig, action hostAction) *faultRunner {
+	return &faultRunner{cfg: cfg, action: action}
 }
 
-func (r *t3Runner) run(runIdx int) Row {
+func (r *faultRunner) run(runIdx int) Row {
 	cfg := r.cfg
-	condition := t3Condition(cfg.Target, cfg.RestoreAfter, cfg.Label)
+	condition := faultCondition(cfg.Target, cfg.RestoreAfter, cfg.Label)
 
 	tags := cfg.Tags
 	if len(tags) == 0 {
-		tags = t1Tags
+		tags = scaleTags
 	}
 	image := cfg.Image
 	if image == "" {
 		image = "nginx"
 	}
 	tag := tags[runIdx%len(tags)]
-	service := t1Service{Name: cfg.Service, Image: imageRef(cfg.Registry, image, tag)}
-	stackContent := t1StackYAML([]t1Service{service})
+	service := scaleService{Name: cfg.Service, Image: imageRef(cfg.Registry, image, tag)}
+	stackContent := scaleStackYAML([]scaleService{service})
 	stackPath := filepath.Join(cfg.Repo, cfg.Stack+".yaml")
 	if err := os.WriteFile(stackPath, []byte(stackContent), 0o644); err != nil {
-		return t3ErrorRow(runIdx, condition, fmt.Errorf("write stack file: %w", err))
+		return faultErrorRow(runIdx, condition, fmt.Errorf("write stack file: %w", err))
 	}
 
 	// Guaranteed-once restore: the sync.Once ensures whichever of (a) the
@@ -222,9 +222,9 @@ func (r *t3Runner) run(runIdx int) Row {
 			if r.action.Restore == "" {
 				return
 			}
-			if err := t3RunShell(context.Background(), r.action.Restore); err != nil {
+			if err := faultRunShell(context.Background(), r.action.Restore); err != nil {
 				restoreErr = err
-				fmt.Fprintf(os.Stderr, "t3 run %d: restore failed for target %s: %v\n", runIdx, cfg.Target, err)
+				fmt.Fprintf(os.Stderr, "fault run %d: restore failed for target %s: %v\n", runIdx, cfg.Target, err)
 			}
 		})
 	}
@@ -232,20 +232,20 @@ func (r *t3Runner) run(runIdx int) Row {
 
 	// Tail before the push that will produce the apply event this run
 	// reacts to, so the race is won by construction rather than by luck.
-	waitCtx, cancel := context.WithTimeout(context.Background(), t3ConvergeTimeout)
+	waitCtx, cancel := context.WithTimeout(context.Background(), faultConvergeTimeout)
 	defer cancel()
 	waitStart := time.Now()
 	events, err := Tail(waitCtx, cfg.EventsFile)
 	if err != nil {
-		return t3ErrorRow(runIdx, condition, fmt.Errorf("tail events: %w", err))
+		return faultErrorRow(runIdx, condition, fmt.Errorf("tail events: %w", err))
 	}
 
-	sha, err := gitCommitAndPush(cfg.Repo, cfg.Stack+".yaml", fmt.Sprintf("t3 run %d", runIdx), true)
+	sha, err := gitCommitAndPush(cfg.Repo, cfg.Stack+".yaml", fmt.Sprintf("fault run %d", runIdx), true)
 	if err != nil {
-		return t3ErrorRow(runIdx, condition, err)
+		return faultErrorRow(runIdx, condition, err)
 	}
 
-	deadline := waitStart.Add(t3ConvergeTimeout)
+	deadline := waitStart.Add(faultConvergeTimeout)
 	var (
 		killFired  bool
 		tKill      time.Time
@@ -257,13 +257,13 @@ func (r *t3Runner) run(runIdx int) Row {
 		if !killFired && e.Stage == telemetry.StageApply {
 			killFired = true
 			tKill = time.Now()
-			if err := t3RunShell(context.Background(), r.action.Kill); err != nil {
+			if err := faultRunShell(context.Background(), r.action.Kill); err != nil {
 				killErr = err
 			}
 			if cfg.RestoreAfter > 0 {
 				time.AfterFunc(cfg.RestoreAfter, restore)
 			}
-			if cfg.Target == t3ReconcilerTarget || cfg.PollReadout {
+			if cfg.Target == faultReconcilerTarget || cfg.PollReadout {
 				// The apply this run reacts to has already happened by the
 				// time this event fires, so the fault lands on an
 				// already-converged commit. Swarmgate's own loop only
@@ -279,7 +279,7 @@ func (r *t3Runner) run(runIdx int) Row {
 				// once the specific converged event is missed, an
 				// already-stable commit's later empty-diff cycles won't
 				// re-announce it regardless of why it was missed.
-				converged, tConverged = t3PollLiveConverged(context.Background(), cfg, stackContent, deadline)
+				converged, tConverged = faultPollLiveConverged(context.Background(), cfg, stackContent, deadline)
 				break
 			}
 			continue
@@ -300,20 +300,20 @@ func (r *t3Runner) run(runIdx int) Row {
 	if !killFired {
 		// No apply event was observed at all: the run still completes and
 		// reports rather than being discarded, since "the fault was never
-		// injected" is itself informative for a real campaign.
+		// injected" is itself informative.
 		tKill = waitStart
 	}
 
-	verifyCtx, verifyCancel := context.WithTimeout(context.Background(), t3FinalVerifyTimeout)
-	desired, observed, verifyErr := t3Verify(verifyCtx, cfg, stackContent)
+	verifyCtx, verifyCancel := context.WithTimeout(context.Background(), faultFinalVerifyTimeout)
+	desired, observed, verifyErr := faultVerify(verifyCtx, cfg, stackContent)
 	verifyCancel()
 	falseOK := false
 	if verifyErr == nil {
-		falseOK = t3FalseOK(desired, observed, converged)
+		falseOK = faultFalseOK(desired, observed, converged)
 	}
 
 	readout := "event"
-	if (cfg.Target == t3ReconcilerTarget || cfg.PollReadout) && killFired {
+	if (cfg.Target == faultReconcilerTarget || cfg.PollReadout) && killFired {
 		readout = "poll"
 	}
 	detail := fmt.Sprintf("false_ok=%t;readout=%s", falseOK, readout)
@@ -331,14 +331,14 @@ func (r *t3Runner) run(runIdx int) Row {
 	}
 
 	return Row{
-		Scenario: "t3", Condition: condition, Run: runIdx,
+		Scenario: "fault", Condition: condition, Run: runIdx,
 		TStart: tKill, TEnd: tEnd, DurationMS: tEnd.Sub(tKill).Milliseconds(),
 		Outcome: outcome, Detail: detail,
 	}
 }
 
-// t3Verify independently checks the live cluster against the stack file
-// this run pushed, for the FR17 false_ok comparison. It re-parses the
+// faultVerify independently checks the live cluster against the stack file
+// this run pushed, for the false_ok comparison. It re-parses the
 // pushed content (rather than trusting anything observed mid-run) and
 // inspects the single service this scenario manages.
 //
@@ -347,9 +347,9 @@ func (r *t3Runner) run(runIdx int) Row {
 // always reflects whatever the applier actually submitted, which is
 // digest-pinned. Comparing an unresolved tag against a digest would flag
 // every genuinely converged run as a mismatch, making false_ok trivially
-// true always — resolving first is what makes this an honest check of
-// FR17's believed-state claim rather than a tautology.
-func t3Verify(ctx context.Context, cfg T3Config, stackContent string) (desired, observed spec.ServiceSpec, err error) {
+// true always — resolving first is what makes this an honest check of the
+// believed-state claim rather than a tautology.
+func faultVerify(ctx context.Context, cfg FaultConfig, stackContent string) (desired, observed spec.ServiceSpec, err error) {
 	ds, err := spec.Parse([]source.StackFile{{Name: cfg.Stack, Content: []byte(stackContent)}}, nil)
 	if err != nil {
 		return spec.ServiceSpec{}, spec.ServiceSpec{}, fmt.Errorf("parse pushed stack: %w", err)
@@ -363,7 +363,7 @@ func t3Verify(ctx context.Context, cfg T3Config, stackContent string) (desired, 
 		return spec.ServiceSpec{}, spec.ServiceSpec{}, fmt.Errorf("service %q not found in parsed stack", qualified)
 	}
 
-	api, err := newT3DockerClient(cfg.DockerHost)
+	api, err := newFaultDockerClient(cfg.DockerHost)
 	if err != nil {
 		return desired, spec.ServiceSpec{}, err
 	}
@@ -384,22 +384,22 @@ func t3Verify(ctx context.Context, cfg T3Config, stackContent string) (desired, 
 	return desired, observed, nil
 }
 
-// t3DockerAPI is the slice of the Docker client t3Verify needs, kept narrow
+// faultDockerAPI is the slice of the Docker client faultVerify needs, kept narrow
 // so it can be satisfied by *client.Client without pulling in the rest of
 // the SDK's surface into this package's dependency graph.
-type t3DockerAPI interface {
+type faultDockerAPI interface {
 	ServiceInspectWithRaw(ctx context.Context, serviceID string, opts swarm.ServiceInspectOptions) (swarm.Service, []byte, error)
 	NetworkList(ctx context.Context, options network.ListOptions) ([]network.Summary, error)
 }
 
-// newT3DockerClient builds a Docker API client for t3Verify. host may be an
-// ssh://user@host[/path] URL: t3's verify step often needs to reach a
+// newFaultDockerClient builds a Docker API client for faultVerify. host may be an
+// ssh://user@host[/path] URL: fault's verify step often needs to reach a
 // manager other than the one the harness process itself runs on (killing
 // the harness's own host mid-run isn't observable from inside it), so the
 // same connection helper `docker context`/`docker -H ssh://...` uses is
 // wired in here rather than relying on client.WithHost's native schemes
 // (tcp/unix/npipe only).
-func newT3DockerClient(host string) (t3DockerAPI, error) {
+func newFaultDockerClient(host string) (faultDockerAPI, error) {
 	opts := []client.Opt{client.FromEnv, client.WithAPIVersionNegotiation()}
 	if host != "" {
 		if helper, err := connhelper.GetConnectionHelper(host); err == nil && helper != nil {
@@ -418,18 +418,18 @@ func newT3DockerClient(host string) (t3DockerAPI, error) {
 	return c, nil
 }
 
-func t3ErrorRow(runIdx int, condition string, err error) Row {
+func faultErrorRow(runIdx int, condition string, err error) Row {
 	now := time.Now()
 	return Row{
-		Scenario: "t3", Condition: condition, Run: runIdx,
+		Scenario: "fault", Condition: condition, Run: runIdx,
 		TStart: now, TEnd: now, DurationMS: 0, Outcome: "error", Detail: err.Error(),
 	}
 }
 
-// t3RunShell executes an opaque fault-injection command through a shell.
+// faultRunShell executes an opaque fault-injection command through a shell.
 // The harness treats its content as a black box: only whether it exits
 // non-zero is meaningful.
-func t3RunShell(ctx context.Context, cmd string) error {
+func faultRunShell(ctx context.Context, cmd string) error {
 	if strings.TrimSpace(cmd) == "" {
 		return fmt.Errorf("empty command")
 	}
@@ -439,15 +439,15 @@ func t3RunShell(ctx context.Context, cmd string) error {
 	return nil
 }
 
-// RunT3 executes the t3 fault-injection campaign: n runs, each pushing a
+// RunFault executes a fault-injection run: n iterations, each pushing a
 // one-service stack change, killing --target on the first apply event that
 // follows, awaiting convergence, restoring the target, and independently
 // verifying the live service against what was pushed.
-func RunT3(cfg T3Config, n int, out *CSVWriter) error {
-	action, err := t3ResolveTarget(cfg.Hosts, cfg.Target)
+func RunFault(cfg FaultConfig, n int, out *CSVWriter) error {
+	action, err := faultResolveTarget(cfg.Hosts, cfg.Target)
 	if err != nil {
 		return err
 	}
-	r := newT3Runner(cfg, action)
+	r := newFaultRunner(cfg, action)
 	return Run(out, n, r.run)
 }

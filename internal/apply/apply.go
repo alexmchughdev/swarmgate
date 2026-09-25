@@ -2,7 +2,9 @@ package apply
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -48,6 +50,8 @@ type serviceAPI interface {
 	NetworkList(ctx context.Context, options network.ListOptions) ([]network.Summary, error)
 	NetworkCreate(ctx context.Context, name string, options network.CreateOptions) (network.CreateResponse, error)
 	NetworkInspect(ctx context.Context, networkID string, options network.InspectOptions) (network.Inspect, error)
+	ConfigList(ctx context.Context, options swarm.ConfigListOptions) ([]swarm.Config, error)
+	SecretList(ctx context.Context, options swarm.SecretListOptions) ([]swarm.Secret, error)
 }
 
 // SwarmApplier applies changes to a live Swarm manager.
@@ -99,6 +103,9 @@ func (a *SwarmApplier) create(ctx context.Context, s spec.ServiceSpec) error {
 	}
 	desired := spec.ToSwarm(s)
 	attachByID(&desired, ids)
+	if err := a.attachConfigsAndSecrets(ctx, &desired, s); err != nil {
+		return fmt.Errorf("create %q: %w", s.Name, err)
+	}
 	if _, err := a.api.ServiceCreate(ctx, desired, swarm.ServiceCreateOptions{}); err != nil {
 		return fmt.Errorf("create %q: %w", s.Name, err)
 	}
@@ -110,17 +117,23 @@ func (a *SwarmApplier) update(ctx context.Context, s spec.ServiceSpec) error {
 	if err != nil {
 		return fmt.Errorf("update %q: inspect: %w", s.Name, err)
 	}
+	if err := checkImmutableChange(current.Spec, s); err != nil {
+		return fmt.Errorf("update %q: %w", s.Name, err)
+	}
 	ids, err := a.ensureNetworks(ctx, s)
 	if err != nil {
 		return fmt.Errorf("update %q: %w", s.Name, err)
 	}
 
-	// Start from the inspected spec and overwrite only the FR4-modelled
+	// Start from the inspected spec and overwrite only the modelled
 	// fields: everything the model does not cover (engine-managed
 	// settings, operator-set options like grace periods or placement)
 	// must survive an update untouched.
 	desired := spec.ToSwarm(s)
 	attachByID(&desired, ids)
+	if err := a.attachConfigsAndSecrets(ctx, &desired, s); err != nil {
+		return fmt.Errorf("update %q: %w", s.Name, err)
+	}
 	mutated := current.Spec
 
 	mutated.Annotations.Name = desired.Annotations.Name
@@ -135,12 +148,28 @@ func (a *SwarmApplier) update(ctx context.Context, s spec.ServiceSpec) error {
 	cs.Image = desired.TaskTemplate.ContainerSpec.Image
 	cs.Env = desired.TaskTemplate.ContainerSpec.Env
 	cs.Healthcheck = desired.TaskTemplate.ContainerSpec.Healthcheck
+	cs.Command = desired.TaskTemplate.ContainerSpec.Command
+	cs.Args = desired.TaskTemplate.ContainerSpec.Args
+	cs.Hostname = desired.TaskTemplate.ContainerSpec.Hostname
+	cs.User = desired.TaskTemplate.ContainerSpec.User
+	cs.CapabilityAdd = desired.TaskTemplate.ContainerSpec.CapabilityAdd
+	cs.StopGracePeriod = desired.TaskTemplate.ContainerSpec.StopGracePeriod
+	cs.Ulimits = desired.TaskTemplate.ContainerSpec.Ulimits
+	cs.Mounts = desired.TaskTemplate.ContainerSpec.Mounts
+	// Configs/Secrets are re-attached, not diffed here: checkImmutableChange
+	// above has already refused this call if the referenced set actually
+	// changed, so this is either a no-op re-assertion or a same-set
+	// resolve-to-ID pass.
+	cs.Configs = desired.TaskTemplate.ContainerSpec.Configs
+	cs.Secrets = desired.TaskTemplate.ContainerSpec.Secrets
 	mutated.TaskTemplate.ContainerSpec = &cs
 
-	// Managed services are always replicated, so replacing the mode union
-	// wholesale is exactly the replica overwrite.
 	mutated.Mode = desired.Mode
 	mutated.TaskTemplate.Networks = desired.TaskTemplate.Networks
+	mutated.TaskTemplate.RestartPolicy = desired.TaskTemplate.RestartPolicy
+	mutated.TaskTemplate.Resources = desired.TaskTemplate.Resources
+	mutated.TaskTemplate.Placement = desired.TaskTemplate.Placement
+	mutated.UpdateConfig = desired.UpdateConfig
 
 	// Only Ports is modelled; the rest of the endpoint spec (resolution
 	// mode) is carried over.
@@ -160,6 +189,61 @@ func (a *SwarmApplier) update(ctx context.Context, s spec.ServiceSpec) error {
 		return fmt.Errorf("update %q: %w", s.Name, err)
 	}
 	return nil
+}
+
+// checkImmutableChange refuses an update that would change the set of
+// attached configs or secrets. Swarm does not support swapping a running
+// task's config/secret attachments in place — the new content only reaches
+// a container that Swarm creates fresh, which a ServiceUpdate is not
+// guaranteed to do (an otherwise-unchanged task is left running). Remove
+// and recreate the service instead, so the engine builds the container from
+// scratch with the new attachment set.
+func checkImmutableChange(current swarm.ServiceSpec, desired spec.ServiceSpec) error {
+	var currentConfigs, currentSecrets []string
+	if cs := current.TaskTemplate.ContainerSpec; cs != nil {
+		for _, c := range cs.Configs {
+			currentConfigs = append(currentConfigs, c.ConfigName+":"+refFileName(c.File))
+		}
+		for _, s := range cs.Secrets {
+			currentSecrets = append(currentSecrets, s.SecretName+":"+refFileNameSecret(s.File))
+		}
+	}
+	slices.Sort(currentConfigs)
+	slices.Sort(currentSecrets)
+
+	desiredConfigs := fileRefKeys(desired.Configs)
+	desiredSecrets := fileRefKeys(desired.Secrets)
+
+	if !slices.Equal(currentConfigs, desiredConfigs) {
+		return errors.New("configs changed: Swarm cannot update a running service's config attachments in place; remove and recreate the service")
+	}
+	if !slices.Equal(currentSecrets, desiredSecrets) {
+		return errors.New("secrets changed: Swarm cannot update a running service's secret attachments in place; remove and recreate the service")
+	}
+	return nil
+}
+
+func fileRefKeys(refs []spec.FileRef) []string {
+	keys := make([]string, len(refs))
+	for i, r := range refs {
+		keys[i] = r.Source + ":" + r.Target
+	}
+	slices.Sort(keys)
+	return keys
+}
+
+func refFileName(f *swarm.ConfigReferenceFileTarget) string {
+	if f == nil {
+		return ""
+	}
+	return f.Name
+}
+
+func refFileNameSecret(f *swarm.SecretReferenceFileTarget) string {
+	if f == nil {
+		return ""
+	}
+	return f.Name
 }
 
 // mergeLabels returns current with every swarmgate.*-prefixed key
@@ -237,6 +321,51 @@ func (a *SwarmApplier) ensureNetworks(ctx context.Context, s spec.ServiceSpec) (
 		ids[name] = created.ID
 	}
 	return ids, nil
+}
+
+// attachConfigsAndSecrets resolves every config/secret ToSwarm referenced by
+// name onto its live object ID, the same name-to-ID problem ensureNetworks
+// solves for networks — except configs and secrets are external:true only
+// (see internal/spec's parse allowlist), so unlike ensureNetworks this
+// never creates one: a reference to a name with no matching live object is
+// an error, since swarmgate is not the thing that was supposed to create it.
+func (a *SwarmApplier) attachConfigsAndSecrets(ctx context.Context, desired *swarm.ServiceSpec, s spec.ServiceSpec) error {
+	cs := desired.TaskTemplate.ContainerSpec
+	if len(s.Configs) > 0 {
+		configs, err := a.api.ConfigList(ctx, swarm.ConfigListOptions{})
+		if err != nil {
+			return fmt.Errorf("list configs: %w", err)
+		}
+		byName := make(map[string]string, len(configs))
+		for _, c := range configs {
+			byName[c.Spec.Name] = c.ID
+		}
+		for _, ref := range cs.Configs {
+			id, ok := byName[ref.ConfigName]
+			if !ok {
+				return fmt.Errorf("config %q not found: external configs must already exist in the cluster", ref.ConfigName)
+			}
+			ref.ConfigID = id
+		}
+	}
+	if len(s.Secrets) > 0 {
+		secrets, err := a.api.SecretList(ctx, swarm.SecretListOptions{})
+		if err != nil {
+			return fmt.Errorf("list secrets: %w", err)
+		}
+		byName := make(map[string]string, len(secrets))
+		for _, sec := range secrets {
+			byName[sec.Spec.Name] = sec.ID
+		}
+		for _, ref := range cs.Secrets {
+			id, ok := byName[ref.SecretName]
+			if !ok {
+				return fmt.Errorf("secret %q not found: external secrets must already exist in the cluster", ref.SecretName)
+			}
+			ref.SecretID = id
+		}
+	}
+	return nil
 }
 
 // awaitNetwork blocks until a just-created network is readable. Swarm-scope

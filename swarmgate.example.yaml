@@ -13,6 +13,7 @@ git:
                                        # a listed variable resolves to — only add
                                        # names every stack-file author is meant
                                        # to see the value of.
+env_file_root: "/datavol/env"         # optional host directory for service env_file paths
 poll_interval: "30s"                  # Go duration, default 30s
 events:
   wake: true                          # default true

@@ -61,6 +61,40 @@ type ServiceSpec struct {
 	// Healthcheck is nil when the service defines none. Its presence
 	// drives the converged predicate's health clause.
 	Healthcheck *HealthcheckSpec
+
+	// Command overrides the image's CMD; nil leaves it untouched.
+	Command []string
+	// Entrypoint overrides the image's ENTRYPOINT; nil leaves it untouched.
+	Entrypoint []string
+	// Hostname is carried verbatim, including any Swarm task-template
+	// placeholder such as "{{.Node.Hostname}}" — it is never interpolated
+	// by swarmgate; the engine resolves it per task.
+	Hostname string
+	// CapAdd is a sorted, deduplicated set of added Linux capabilities.
+	CapAdd []string
+	User   string
+	// StopGracePeriod is zero when unset, letting the engine default apply.
+	StopGracePeriod time.Duration
+	// Ulimits is sorted by Name for stable comparison.
+	Ulimits []UlimitSpec
+	// Volumes holds named, local-driver volume mounts only; sorted by
+	// Target. Bind mounts, tmpfs, and non-local drivers are outside the
+	// normal form and rejected at parse.
+	Volumes []VolumeMount
+	// Configs and Secrets reference cluster objects that must already
+	// exist (external only — swarmgate never creates or reads their
+	// content); both are sorted by Target.
+	Configs []FileRef
+	Secrets []FileRef
+
+	// Mode is the deploy mode: "replicated", "global", "replicated-job",
+	// or "global-job". Normal form always carries an explicit value —
+	// "replicated" when compose omits deploy.mode entirely.
+	Mode          string
+	RestartPolicy *RestartPolicySpec
+	Resources     *ResourcesSpec
+	Placement     *PlacementSpec
+	UpdateConfig  *UpdateConfigSpec
 }
 
 // PortSpec is one published port.
@@ -68,6 +102,61 @@ type PortSpec struct {
 	Target    uint32
 	Published uint32
 	Protocol  string
+	// Mode is the publish mode, "host" or "ingress". Normal form always
+	// carries an explicit value — "ingress" when compose omits it — so it
+	// round-trips through the diff instead of silently collapsing to
+	// whatever the engine happens to default to.
+	Mode string
+}
+
+// UlimitSpec is one container ulimit.
+type UlimitSpec struct {
+	Name string
+	Soft int64
+	Hard int64
+}
+
+// VolumeMount is one named, local-driver volume attachment.
+type VolumeMount struct {
+	Source   string // the named volume
+	Target   string // mount path inside the container
+	ReadOnly bool
+}
+
+// FileRef is a reference to an externally managed config or secret object,
+// by name, and the path it is mounted at.
+type FileRef struct {
+	Source string // the config/secret name
+	Target string // mount path inside the container
+}
+
+// RestartPolicySpec mirrors deploy.restart_policy.
+type RestartPolicySpec struct {
+	Condition   string // "none", "on-failure", or "any"
+	Delay       time.Duration
+	MaxAttempts uint64
+	Window      time.Duration
+}
+
+// ResourcesSpec mirrors deploy.resources.limits. Reservations and
+// non-trivial resource types (devices, generic resources) are outside the
+// normal form.
+type ResourcesSpec struct {
+	MemoryBytes int64
+	NanoCPUs    int64
+}
+
+// PlacementSpec mirrors deploy.placement. Preferences and
+// max_replicas_per_node are outside the normal form; only constraints are
+// modelled.
+type PlacementSpec struct {
+	Constraints []string
+}
+
+// UpdateConfigSpec mirrors deploy.update_config. Only parallelism is
+// modelled.
+type UpdateConfigSpec struct {
+	Parallelism uint64
 }
 
 // HealthcheckSpec mirrors the container healthcheck a service declares.

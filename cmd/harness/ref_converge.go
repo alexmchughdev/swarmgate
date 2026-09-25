@@ -10,12 +10,12 @@ import (
 )
 
 func init() {
-	register(scenarioCmd{name: "t8", bind: bindT8, noEventsFile: true})
+	register(scenarioCmd{name: "refConverge", bind: bindRefConverge, noEventsFile: true})
 }
 
-func bindT8(fs *flag.FlagSet, sf *sharedFlags) func() error {
+func bindRefConverge(fs *flag.FlagSet, sf *sharedFlags) func() error {
 	repo := fs.String("repo", "", "path to an existing working-tree git clone of the repo ArgoCD watches (required)")
-	stack := fs.String("stack", "t8", "subdirectory under --repo holding this campaign's manifests")
+	stack := fs.String("stack", "refConverge", "subdirectory under --repo holding this run's manifests")
 	appName := fs.String("app-name", "", "ArgoCD Application resource name, already created and pointed at --stack (required)")
 	namespace := fs.String("namespace", "argocd", "namespace the ArgoCD Application resource lives in")
 	kubeconfig := fs.String("kubeconfig", "", "path to kubeconfig for kubectl calls; empty = kubectl's own default resolution")
@@ -27,7 +27,7 @@ func bindT8(fs *flag.FlagSet, sf *sharedFlags) func() error {
 	registry := fs.String("registry", "", "optional host[:port] prefix for image references; empty = Docker Hub, unprefixed")
 	image := fs.String("image", "", "image repository name; empty = nginx (the built-in default tag cycle)")
 	tags := fs.String("tags", "", "comma-separated tag cycle; empty = the built-in nginx alpine tags")
-	triggerRefresh := fs.Bool("trigger-refresh", false, "annotate the Application for an immediate hard refresh after each push, standing in for a webhook notification (see T8Config.TriggerRefresh)")
+	triggerRefresh := fs.Bool("trigger-refresh", false, "annotate the Application for an immediate hard refresh after each push, standing in for a webhook notification (see RefConvergeConfig.TriggerRefresh)")
 
 	return func() error {
 		if *repo == "" {
@@ -40,7 +40,7 @@ func bindT8(fs *flag.FlagSet, sf *sharedFlags) func() error {
 		if *tags != "" {
 			tagList = strings.Split(*tags, ",")
 		}
-		cfg := harness.T8Config{
+		cfg := harness.RefConvergeConfig{
 			Repo: *repo, Stack: *stack, AppName: *appName, Namespace: *namespace, Kubeconfig: *kubeconfig,
 			Scale: *scale, Changes: *changes, Push: *push,
 			Registry: *registry, Image: *image, Tags: tagList,
@@ -51,6 +51,6 @@ func bindT8(fs *flag.FlagSet, sf *sharedFlags) func() error {
 			return err
 		}
 		defer out.Close()
-		return harness.RunT8(cfg, sf.n, out)
+		return harness.RunRefConverge(cfg, sf.n, out)
 	}
 }

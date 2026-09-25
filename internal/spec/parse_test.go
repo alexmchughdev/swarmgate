@@ -1,12 +1,15 @@
 package spec
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/docker/docker/api/types/swarm"
 
 	"github.com/alexmchughdev/swarmgate/internal/source"
 )
@@ -18,6 +21,40 @@ func loadFixture(t *testing.T, stack string) source.StackFile {
 		t.Fatalf("read fixture: %v", err)
 	}
 	return source.StackFile{Name: stack, Content: content}
+}
+
+func TestParseEnvFileHostRoot(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "app.env"), []byte("FROM_FILE=resolved\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := source.StackFile{Name: "app", Content: []byte("services:\n  web:\n    image: nginx:1.27\n    env_file: app.env\n")}
+	t.Run("valid resolution", func(t *testing.T) {
+		got, err := Parse([]source.StackFile{f}, nil, root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Services["app_web"].Env["FROM_FILE"] != "resolved" {
+			t.Fatalf("Env = %#v", got.Services["app_web"].Env)
+		}
+	})
+	t.Run("missing file", func(t *testing.T) {
+		missing := source.StackFile{Name: "app", Content: []byte("services:\n  web:\n    image: nginx:1.27\n    env_file: missing.env\n")}
+		if _, err := Parse([]source.StackFile{missing}, nil, root); err == nil || !strings.Contains(err.Error(), "env_file") {
+			t.Fatalf("Parse error = %v, want missing env_file", err)
+		}
+	})
+	t.Run("path escape", func(t *testing.T) {
+		escape := source.StackFile{Name: "app", Content: []byte("services:\n  web:\n    image: nginx:1.27\n    env_file: ../outside.env\n")}
+		if _, err := Parse([]source.StackFile{escape}, nil, root); err == nil || !strings.Contains(err.Error(), "escapes env_file_root") {
+			t.Fatalf("Parse error = %v, want path escape", err)
+		}
+	})
+	t.Run("unconfigured root", func(t *testing.T) {
+		if _, err := Parse([]source.StackFile{f}, nil); err == nil || !strings.Contains(err.Error(), "env_file_root is configured") {
+			t.Fatalf("Parse error = %v, want clear configuration rejection", err)
+		}
+	})
 }
 
 func TestParseNormalForm(t *testing.T) {
@@ -45,8 +82,8 @@ func TestParseNormalForm(t *testing.T) {
 			},
 			Networks: []string{"alpha_front"},
 			Ports: []PortSpec{
-				{Target: 80, Published: 8080, Protocol: "udp"},
-				{Target: 443, Published: 8443, Protocol: "tcp"},
+				{Target: 80, Published: 8080, Protocol: "udp", Mode: "ingress"},
+				{Target: 443, Published: 8443, Protocol: "tcp", Mode: "ingress"},
 			},
 			Healthcheck: &HealthcheckSpec{
 				Test:        []string{"CMD", "curl", "-f", "http://localhost/"},
@@ -55,6 +92,7 @@ func TestParseNormalForm(t *testing.T) {
 				Retries:     3,
 				StartPeriod: 30 * time.Second,
 			},
+			Mode: "replicated",
 		},
 		"alpha_worker": {
 			Name:     "alpha_worker",
@@ -66,6 +104,7 @@ func TestParseNormalForm(t *testing.T) {
 				"swarmgate.stack":   "alpha",
 			},
 			Networks: []string{"alpha_default"},
+			Mode:     "replicated",
 		},
 		"beta_db": {
 			Name:     "beta_db",
@@ -77,6 +116,7 @@ func TestParseNormalForm(t *testing.T) {
 				"swarmgate.stack":   "beta",
 			},
 			Networks: []string{"beta_default"},
+			Mode:     "replicated",
 		},
 	}}
 
@@ -166,9 +206,9 @@ services:
 	}
 }
 
-// TestParseRejectsUnsupportedPortSubkey is a regression test: mode: host
-// and host_ip parsed successfully and were silently dropped, deploying
-// ingress publication instead of the host-mode publication requested.
+// TestParseRejectsUnsupportedPortSubkey is a regression test: an
+// unmodelled long-syntax port field must still fail the parse rather than
+// be silently dropped.
 func TestParseRejectsUnsupportedPortSubkey(t *testing.T) {
 	f := source.StackFile{Name: "port", Content: []byte(`
 services:
@@ -177,15 +217,52 @@ services:
     ports:
       - target: 80
         published: "8080"
-        mode: host
+        host_ip: 127.0.0.1
 `)}
 	_, err := Parse([]source.StackFile{f}, nil)
 	if err == nil {
-		t.Fatal("Parse: expected an error for ports.mode, got nil")
+		t.Fatal("Parse: expected an error for ports.host_ip, got nil")
 	}
-	if !strings.Contains(err.Error(), `unsupported compose field "ports.mode"`) {
-		t.Errorf("error = %v, want it to name ports.mode", err)
+	if !strings.Contains(err.Error(), `unsupported compose field "ports.host_ip"`) {
+		t.Errorf("error = %v, want it to name ports.host_ip", err)
 	}
+}
+
+// TestParsePortModeHostRoundTrips is a regression test: mode: host used to
+// parse successfully and then be silently dropped, deploying ingress
+// publication instead of the host-mode publication requested. It must now
+// survive parse, Normalize, and the ToSwarm/FromSwarm round trip unchanged.
+func TestParsePortModeHostRoundTrips(t *testing.T) {
+	f := source.StackFile{Name: "port", Content: []byte(`
+services:
+  web:
+    image: nginx:1.27
+    ports:
+      - target: 80
+        published: 8080
+        mode: host
+`)}
+	got, err := Parse([]source.StackFile{f}, nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	svc := got.Services["port_web"]
+	want := []PortSpec{{Target: 80, Published: 8080, Protocol: "tcp", Mode: "host"}}
+	if !reflect.DeepEqual(svc.Ports, want) {
+		t.Fatalf("Ports = %+v, want %+v", svc.Ports, want)
+	}
+	roundTripped := FromSwarm(swarmService(t, svc), nil)
+	if roundTripped.Ports[0].Mode != "host" {
+		t.Fatalf("port mode after ToSwarm/FromSwarm round trip = %q, want %q (must not silently become ingress)", roundTripped.Ports[0].Mode, "host")
+	}
+}
+
+// swarmService renders a normal-form spec into a swarm.Service wrapper, the
+// shape FromSwarm consumes, for round-trip assertions.
+func swarmService(t *testing.T, s ServiceSpec) swarm.Service {
+	t.Helper()
+	sw := ToSwarm(s)
+	return swarm.Service{Spec: sw}
 }
 
 // TestParseAcceptsShortSyntaxPorts is a regression test: the ports subkey
@@ -275,6 +352,400 @@ func TestParseInterpolationOnlyExposesAllowlistedVars(t *testing.T) {
 	}
 }
 
+// TestParseNewComposeFields is table-driven: one accept and one reject case
+// (at minimum) per field added alongside the resource, config/secret,
+// container-option, and deploy-option support in this file. Each accept
+// case's check function asserts the specific normal-form value the field
+// produced, not just that Parse succeeded.
+func TestParseNewComposeFields(t *testing.T) {
+	tests := []struct {
+		name    string
+		yaml    string
+		wantErr string // substring; empty means Parse must succeed
+		check   func(t *testing.T, svc ServiceSpec)
+	}{
+		{
+			name: "volumes: named local-driver volume accepted",
+			yaml: `
+services:
+  web:
+    image: nginx:1.27
+    volumes:
+      - data:/var/lib/data
+volumes:
+  data: {}
+`,
+			check: func(t *testing.T, svc ServiceSpec) {
+				want := []VolumeMount{{Source: "data", Target: "/var/lib/data"}}
+				if !reflect.DeepEqual(svc.Volumes, want) {
+					t.Errorf("Volumes = %+v, want %+v", svc.Volumes, want)
+				}
+			},
+		},
+		{
+			name: "volumes: bind mount rejected",
+			yaml: `
+services:
+  web:
+    image: nginx:1.27
+    volumes:
+      - /host/data:/var/lib/data
+`,
+			wantErr: "only named local-driver volumes are supported",
+		},
+		{
+			name: "volumes: top-level declaration with a driver rejected",
+			yaml: `
+services:
+  web:
+    image: nginx:1.27
+    volumes:
+      - data:/var/lib/data
+volumes:
+  data:
+    driver: nfs
+`,
+			wantErr: `unsupported compose field "volumes.data"`,
+		},
+		{
+			name: "env_file rejected when env_file_root is unset",
+			yaml: `
+services:
+  web:
+    image: nginx:1.27
+    env_file:
+      - .env
+`,
+			wantErr: "env_file_root is configured",
+		},
+		{
+			name: "configs: external reference accepted",
+			yaml: `
+services:
+  web:
+    image: nginx:1.27
+    configs:
+      - source: myconf
+        target: /etc/myconf
+configs:
+  myconf:
+    external: true
+`,
+			check: func(t *testing.T, svc ServiceSpec) {
+				want := []FileRef{{Source: "myconf", Target: "/etc/myconf"}}
+				if !reflect.DeepEqual(svc.Configs, want) {
+					t.Errorf("Configs = %+v, want %+v", svc.Configs, want)
+				}
+			},
+		},
+		{
+			name: "configs: inline file content rejected",
+			yaml: `
+services:
+  web:
+    image: nginx:1.27
+    configs:
+      - source: myconf
+        target: /etc/myconf
+configs:
+  myconf:
+    file: ./myconf.txt
+`,
+			wantErr: `configs "myconf" must be external only`,
+		},
+		{
+			name: "secrets: external reference accepted",
+			yaml: `
+services:
+  web:
+    image: nginx:1.27
+    secrets:
+      - source: mysecret
+        target: /run/secrets/mysecret
+secrets:
+  mysecret:
+    external: true
+`,
+			check: func(t *testing.T, svc ServiceSpec) {
+				want := []FileRef{{Source: "mysecret", Target: "/run/secrets/mysecret"}}
+				if !reflect.DeepEqual(svc.Secrets, want) {
+					t.Errorf("Secrets = %+v, want %+v", svc.Secrets, want)
+				}
+			},
+		},
+		{
+			name: "secrets: inline content rejected",
+			yaml: `
+services:
+  web:
+    image: nginx:1.27
+    secrets:
+      - source: mysecret
+        target: /run/secrets/mysecret
+secrets:
+  mysecret:
+    content: hunter2
+`,
+			wantErr: `secrets "mysecret" must be external only`,
+		},
+		{
+			// compose-go itself refuses a reference to an undeclared name
+			// before swarmgate's own external-only check ever runs;
+			// serviceFileRefs' declared-name check exists as a second
+			// layer in case that upstream validation ever changes.
+			name: "secrets: reference to an undeclared name rejected",
+			yaml: `
+services:
+  web:
+    image: nginx:1.27
+    secrets:
+      - source: mysecret
+`,
+			wantErr: "undefined secret mysecret",
+		},
+		{
+			name: "command, entrypoint, hostname, user, cap_add, stop_grace_period accepted",
+			yaml: `
+services:
+  web:
+    image: nginx:1.27
+    command: ["nginx", "-g", "daemon off;"]
+    entrypoint: ["/entry.sh"]
+    hostname: "{{.Node.Hostname}}"
+    user: "1000:1000"
+    cap_add: ["NET_ADMIN", "SYS_TIME"]
+    stop_grace_period: 15s
+`,
+			check: func(t *testing.T, svc ServiceSpec) {
+				if !reflect.DeepEqual(svc.Command, []string{"nginx", "-g", "daemon off;"}) {
+					t.Errorf("Command = %v", svc.Command)
+				}
+				if !reflect.DeepEqual(svc.Entrypoint, []string{"/entry.sh"}) {
+					t.Errorf("Entrypoint = %v", svc.Entrypoint)
+				}
+				if svc.Hostname != "{{.Node.Hostname}}" {
+					t.Errorf("Hostname = %q, want the Swarm placeholder passed through unresolved", svc.Hostname)
+				}
+				if svc.User != "1000:1000" {
+					t.Errorf("User = %q", svc.User)
+				}
+				if !reflect.DeepEqual(svc.CapAdd, []string{"NET_ADMIN", "SYS_TIME"}) {
+					t.Errorf("CapAdd = %v", svc.CapAdd)
+				}
+				if svc.StopGracePeriod != 15*time.Second {
+					t.Errorf("StopGracePeriod = %v, want 15s", svc.StopGracePeriod)
+				}
+			},
+		},
+		{
+			name:    "cap_add: exceeding the resource cap rejected",
+			yaml:    "services:\n  web:\n    image: nginx:1.27\n    cap_add: [" + distinctCapNames(maxCapAdd+1) + "]\n",
+			wantErr: "exceeds the 50 limit",
+		},
+		{
+			name: "ulimits: shorthand and long form accepted",
+			yaml: `
+services:
+  web:
+    image: nginx:1.27
+    ulimits:
+      nproc: 65535
+      nofile:
+        soft: 1024
+        hard: 2048
+`,
+			check: func(t *testing.T, svc ServiceSpec) {
+				want := []UlimitSpec{{Name: "nofile", Soft: 1024, Hard: 2048}, {Name: "nproc", Soft: 65535, Hard: 65535}}
+				if !reflect.DeepEqual(svc.Ulimits, want) {
+					t.Errorf("Ulimits = %+v, want %+v", svc.Ulimits, want)
+				}
+			},
+		},
+		{
+			name: "deploy.mode: global accepted",
+			yaml: `
+services:
+  web:
+    image: nginx:1.27
+    deploy:
+      mode: global
+`,
+			check: func(t *testing.T, svc ServiceSpec) {
+				if svc.Mode != "global" {
+					t.Errorf("Mode = %q, want global", svc.Mode)
+				}
+			},
+		},
+		{
+			name: "deploy.mode: invalid value rejected",
+			yaml: `
+services:
+  web:
+    image: nginx:1.27
+    deploy:
+      mode: sometimes
+`,
+			wantErr: `deploy.mode "sometimes" is not one of`,
+		},
+		{
+			name: "deploy.restart_policy accepted",
+			yaml: `
+services:
+  web:
+    image: nginx:1.27
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 30s
+`,
+			check: func(t *testing.T, svc ServiceSpec) {
+				want := &RestartPolicySpec{Condition: "on-failure", Delay: 5 * time.Second, MaxAttempts: 3, Window: 30 * time.Second}
+				if !reflect.DeepEqual(svc.RestartPolicy, want) {
+					t.Errorf("RestartPolicy = %+v, want %+v", svc.RestartPolicy, want)
+				}
+			},
+		},
+		{
+			name: "deploy.resources: memory and cpu limits accepted",
+			yaml: `
+services:
+  web:
+    image: nginx:1.27
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.5"
+`,
+			check: func(t *testing.T, svc ServiceSpec) {
+				want := &ResourcesSpec{MemoryBytes: 128 * 1024 * 1024, NanoCPUs: 500000000}
+				if !reflect.DeepEqual(svc.Resources, want) {
+					t.Errorf("Resources = %+v, want %+v", svc.Resources, want)
+				}
+			},
+		},
+		{
+			name: "deploy.resources: limits without memory rejected",
+			yaml: `
+services:
+  web:
+    image: nginx:1.27
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+`,
+			wantErr: "resources.limits.memory is required",
+		},
+		{
+			name: "deploy.placement: constraints accepted",
+			yaml: `
+services:
+  web:
+    image: nginx:1.27
+    deploy:
+      placement:
+        constraints:
+          - node.role==worker
+          - node.labels.zone==east
+`,
+			check: func(t *testing.T, svc ServiceSpec) {
+				want := &PlacementSpec{Constraints: []string{"node.labels.zone==east", "node.role==worker"}}
+				if !reflect.DeepEqual(svc.Placement, want) {
+					t.Errorf("Placement = %+v, want %+v", svc.Placement, want)
+				}
+			},
+		},
+		{
+			name: "deploy.update_config: explicit positive parallelism accepted",
+			yaml: `
+services:
+  web:
+    image: nginx:1.27
+    deploy:
+      update_config:
+        parallelism: 2
+`,
+			check: func(t *testing.T, svc ServiceSpec) {
+				want := &UpdateConfigSpec{Parallelism: 2}
+				if !reflect.DeepEqual(svc.UpdateConfig, want) {
+					t.Errorf("UpdateConfig = %+v, want %+v", svc.UpdateConfig, want)
+				}
+			},
+		},
+		{
+			name: "deploy.update_config: zero parallelism rejected",
+			yaml: `
+services:
+  web:
+    image: nginx:1.27
+    deploy:
+      update_config:
+        parallelism: 0
+`,
+			wantErr: "update_config.parallelism must be set and greater than zero",
+		},
+		{
+			name: "x- extension anchor referenced by alias resolves before validation",
+			yaml: `
+x-restart-policy: &restart-policy
+  condition: on-failure
+  max_attempts: 5
+services:
+  web:
+    image: nginx:1.27
+    deploy:
+      restart_policy: *restart-policy
+`,
+			check: func(t *testing.T, svc ServiceSpec) {
+				want := &RestartPolicySpec{Condition: "on-failure", MaxAttempts: 5}
+				if !reflect.DeepEqual(svc.RestartPolicy, want) {
+					t.Errorf("RestartPolicy = %+v, want %+v", svc.RestartPolicy, want)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := source.StackFile{Name: "fields", Content: []byte(tt.yaml)}
+			got, err := Parse([]source.StackFile{f}, nil)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("Parse: expected an error containing %q, got nil", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("error = %v, want it to contain %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			svc, ok := got.Services["fields_web"]
+			if !ok {
+				t.Fatalf("missing service fields_web: %v", got.Services)
+			}
+			if tt.check != nil {
+				tt.check(t, svc)
+			}
+		})
+	}
+}
+
+// distinctCapNames returns n distinct, quoted, comma-separated fake
+// capability names, so a resource-cap test isn't accidentally defeated by
+// Normalize's cap_add deduplication collapsing repeated identical values.
+func distinctCapNames(n int) string {
+	names := make([]string, n)
+	for i := range names {
+		names[i] = fmt.Sprintf("%q", fmt.Sprintf("CAP_FAKE_%d", i))
+	}
+	return strings.Join(names, ", ")
+}
+
 func TestParseUnsupportedFields(t *testing.T) {
 	_, err := Parse([]source.StackFile{
 		loadFixture(t, "unsupported_service"),
@@ -286,11 +757,11 @@ func TestParseUnsupportedFields(t *testing.T) {
 
 	// All offenders across both files must be reported in one error.
 	for _, want := range []string{
-		`unsupported compose field "volumes" in service "unsupported_service_web"`,
+		`unsupported compose field "working_dir" in service "unsupported_service_web"`,
 		`unsupported compose field "depends_on" in service "unsupported_service_web"`,
-		`unsupported compose field "deploy.resources" in service "unsupported_service_web"`,
-		`unsupported compose field "volumes" in stack "unsupported_toplevel"`,
-		`unsupported compose field "secrets" in stack "unsupported_toplevel"`,
+		`unsupported compose field "deploy.rollback_config" in service "unsupported_service_web"`,
+		`unsupported compose field "volumes.data" in stack "unsupported_toplevel"`,
+		`unsupported compose field "secrets.file" in stack "unsupported_toplevel"`,
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error missing %q\nfull error:\n%v", want, err)

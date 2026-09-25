@@ -10,12 +10,12 @@ import (
 )
 
 func init() {
-	register(scenarioCmd{name: "t1", bind: bindT1})
+	register(scenarioCmd{name: "scale", bind: bindScale})
 }
 
-func bindT1(fs *flag.FlagSet, sf *sharedFlags) func() error {
+func bindScale(fs *flag.FlagSet, sf *sharedFlags) func() error {
 	repo := fs.String("repo", "", "path to an existing working-tree git clone the harness commits to (required)")
-	stack := fs.String("stack", "t1", "stack name; file is <stack>.yaml at the repo root")
+	stack := fs.String("stack", "scale", "stack name; file is <stack>.yaml at the repo root")
 	scale := fs.Int("scale", 1, "number of services in the stack (1|10|50)")
 	changes := fs.Int("changes", 1, "number of services bumped per run")
 	push := fs.Bool("push", true, "push after commit; false = commit only, for local-remote setups")
@@ -33,7 +33,7 @@ func bindT1(fs *flag.FlagSet, sf *sharedFlags) func() error {
 		if *tags != "" {
 			tagList = strings.Split(*tags, ",")
 		}
-		cfg := harness.T1Config{
+		cfg := harness.ScaleConfig{
 			Repo: *repo, Stack: *stack, Scale: *scale, Changes: *changes,
 			Push: *push, Registry: *registry, Image: *image, Tags: tagList, Healthcheck: *healthcheck,
 			EventsFile: sf.eventsFile, Timeout: *timeout, Label: sf.label,
@@ -43,6 +43,6 @@ func bindT1(fs *flag.FlagSet, sf *sharedFlags) func() error {
 			return err
 		}
 		defer out.Close()
-		return harness.RunT1(cfg, sf.n, out)
+		return harness.RunScale(cfg, sf.n, out)
 	}
 }

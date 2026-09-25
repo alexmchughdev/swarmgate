@@ -11,15 +11,16 @@ import (
 	"time"
 )
 
-// T8Config configures one t8 convergence campaign: the ArgoCD/RKE2
-// quantitative reference, reproducing T1's scale/changes matrix against a
-// different GitOps controller entirely. Reuses t1Plan/t1Service/t1ServiceName
-// unchanged (they only ever generated an abstract {name, image} list, never
-// anything Swarm-specific) so the two scenarios' underlying condition
-// matrix is provably identical, not just similarly-named.
-type T8Config struct {
+// RefConvergeConfig configures one refConverge convergence run: an
+// ArgoCD/RKE2 reference measurement, reproducing Scale's scale/changes
+// matrix against a different GitOps controller entirely. Reuses
+// scalePlan/scaleService/scaleServiceName unchanged (they only ever
+// generated an abstract {name, image} list, never anything Swarm-specific)
+// so the two scenarios' underlying condition matrix is provably identical,
+// not just similarly-named.
+type RefConvergeConfig struct {
 	Repo       string // path to an existing working-tree clone of the repo ArgoCD watches
-	Stack      string // subdirectory under Repo holding this campaign's manifests
+	Stack      string // subdirectory under Repo holding this run's manifests
 	AppName    string // ArgoCD Application resource name (assumed already created, pointed at Stack)
 	Namespace  string // ArgoCD's own namespace (where the Application resource lives), not the deployed workload's
 	Kubeconfig string // path to the kubeconfig used for kubectl calls
@@ -36,28 +37,25 @@ type T8Config struct {
 	// provide. Without it, ArgoCD only notices a new commit on its own
 	// periodic reconciliation timer (this cluster's default: 180s) --
 	// correct for measuring the poll-only case, but impractical for a
-	// 240-run campaign (worst case ~12 hours of pure poll-wait). See
-	// docs/contentions.md, 2026-07-22/23, for the full rationale: this
-	// measures ArgoCD's sync+converge time given prompt notification
-	// (the realistic production configuration, where a webhook is
-	// standard practice), not the poll-only worst case.
+	// 240-run series (worst case ~12 hours of pure poll-wait). Measures
+	// ArgoCD's sync+converge time given prompt notification (the realistic
+	// production configuration, where a webhook is standard practice), not
+	// the poll-only worst case.
 	TriggerRefresh bool
 	Timeout        time.Duration
 	Label          string
 }
 
-func t8Condition(cfg T8Config) string {
+func refConvergeCondition(cfg RefConvergeConfig) string {
 	return fmt.Sprintf("scale=%d;changes=%d;%s", cfg.Scale, cfg.Changes, cfg.Label)
 }
 
-// t8ReadinessProbe mirrors evalWorkloadHealthcheck's (t1.go) probe contract
+// refConvergeReadinessProbe mirrors evalWorkloadHealthcheck's (scale.go) probe contract
 // as closely as Kubernetes' readinessProbe semantics allow: PROBE_INTERVAL
 // (2s) -> periodSeconds, PROBE_TIMEOUT (2s) -> timeoutSeconds, PROBE_RETRIES
 // (30) -> failureThreshold, start_period (0s) -> initialDelaySeconds (0).
-// Full field-by-field mapping and rationale: docs/build-log.md, "T8-convergence
-// readiness probe" entry.
 //
-// Docker's healthcheck runs *inside* the container (the eval-workload image
+// Docker's healthcheck runs *inside* the container (the workload image
 // ships no shell, so it self-probes via `-healthcheck`, which itself just
 // hits its own /health endpoint); Kubernetes' kubelet can hit the same
 // /health endpoint directly over the pod network with a plain httpGet probe
@@ -65,10 +63,9 @@ func t8Condition(cfg T8Config) string {
 // own HEALTHY_AFTER timer on both platforms), simpler transport, no image
 // change needed. Without this, ArgoCD's Health status only requires "pod
 // Running", a materially weaker bar than Swarm's health-gated convergence --
-// the measurement-equivalence gap flagged in docs/contentions.md, 2026-07-23,
-// "T1-vs-T8-convergence comparison surfaces a real measurement-equivalence
-// gap," and fixed by this probe.
-const t8ReadinessProbe = "          readinessProbe:\n" +
+// a real measurement-equivalence gap between the two platforms that this
+// probe closes.
+const refConvergeReadinessProbe = "          readinessProbe:\n" +
 	"            httpGet:\n" +
 	"              path: /health\n" +
 	"              port: 8080\n" +
@@ -78,11 +75,11 @@ const t8ReadinessProbe = "          readinessProbe:\n" +
 	"            failureThreshold: 30\n" +
 	"            successThreshold: 1\n"
 
-// t8DeploymentYAML renders services as one multi-document Deployment
-// manifest, one document per service, matching t1StackYAML's shape
+// refConvergeDeploymentYAML renders services as one multi-document Deployment
+// manifest, one document per service, matching scaleStackYAML's shape
 // (scale independent single-replica units, changes of them bumped per
 // run) in Kubernetes' own resource form instead of a compose stack.
-func t8DeploymentYAML(services []t1Service) string {
+func refConvergeDeploymentYAML(services []scaleService) string {
 	var b strings.Builder
 	for i, s := range services {
 		if i > 0 {
@@ -107,7 +104,7 @@ spec:
       containers:
         - name: %s
           image: %s
-%s`, s.Name, s.Name, s.Name, s.Name, s.Name, s.Image, t8ReadinessProbe)
+%s`, s.Name, s.Name, s.Name, s.Name, s.Name, s.Image, refConvergeReadinessProbe)
 	}
 	return b.String()
 }
@@ -127,12 +124,12 @@ type argoAppStatus struct {
 	} `json:"status"`
 }
 
-// t8FetchAppStatus shells out to kubectl rather than a typed client:
+// refConvergeFetchAppStatus shells out to kubectl rather than a typed client:
 // Application is a CRD swarmgate has no generated clientset for, and every
 // other cross-process call in this harness (docker, ssh) already goes
 // through os/exec — a raw dynamic-client dependency for one JSON read
 // would be more machinery than the read is worth.
-func t8FetchAppStatus(ctx context.Context, kubeconfig, namespace, appName string) (argoAppStatus, error) {
+func refConvergeFetchAppStatus(ctx context.Context, kubeconfig, namespace, appName string) (argoAppStatus, error) {
 	args := []string{"get", "application", appName, "-n", namespace, "-o", "json"}
 	if kubeconfig != "" {
 		args = append([]string{"--kubeconfig", kubeconfig}, args...)
@@ -148,13 +145,13 @@ func t8FetchAppStatus(ctx context.Context, kubeconfig, namespace, appName string
 	return st, nil
 }
 
-// t8TriggerRefresh annotates the Application to request an immediate hard
+// refConvergeTriggerRefresh annotates the Application to request an immediate hard
 // refresh, the stand-in for a webhook notification described on
-// T8Config.TriggerRefresh. Best-effort: a failure here just means this run
+// RefConvergeConfig.TriggerRefresh. Best-effort: a failure here just means this run
 // falls back to waiting out ArgoCD's own poll interval, not a run-ending
 // error -- the harness's own AwaitConverged loop is what actually decides
 // pass/fail.
-func t8TriggerRefresh(ctx context.Context, kubeconfig, namespace, appName string) error {
+func refConvergeTriggerRefresh(ctx context.Context, kubeconfig, namespace, appName string) error {
 	args := []string{"annotate", "application", appName, "-n", namespace, "argocd.argoproj.io/refresh=hard", "--overwrite"}
 	if kubeconfig != "" {
 		args = append([]string{"--kubeconfig", kubeconfig}, args...)
@@ -162,19 +159,19 @@ func t8TriggerRefresh(ctx context.Context, kubeconfig, namespace, appName string
 	return exec.CommandContext(ctx, "kubectl", args...).Run()
 }
 
-// t8AwaitConverged polls the ArgoCD Application's own status (an external
-// observer's view via its status API, per the measurement-equivalence
-// definition in docs/build-log.md's T8 section — never ArgoCD's internal
-// reconciliation timestamps) until it reports the given commit sha fully
-// synced and healthy, or ctx is done.
-func t8AwaitConverged(ctx context.Context, kubeconfig, namespace, appName, sha string, pollEvery time.Duration) error {
+// refConvergeAwaitConverged polls the ArgoCD Application's own status (an
+// external observer's view via its status API — matching how swarmgate's
+// own convergence is measured, never ArgoCD's internal reconciliation
+// timestamps) until it reports the given commit sha fully synced and
+// healthy, or ctx is done.
+func refConvergeAwaitConverged(ctx context.Context, kubeconfig, namespace, appName, sha string, pollEvery time.Duration) error {
 	if pollEvery <= 0 {
 		pollEvery = time.Second
 	}
 	ticker := time.NewTicker(pollEvery)
 	defer ticker.Stop()
 	for {
-		st, err := t8FetchAppStatus(ctx, kubeconfig, namespace, appName)
+		st, err := refConvergeFetchAppStatus(ctx, kubeconfig, namespace, appName)
 		if err == nil && st.Status.Sync.Revision == sha &&
 			st.Status.Sync.Status == "Synced" && st.Status.Health.Status == "Healthy" {
 			return nil
@@ -187,68 +184,68 @@ func t8AwaitConverged(ctx context.Context, kubeconfig, namespace, appName, sha s
 	}
 }
 
-type t8Runner struct {
-	cfg      T8Config
+type refConvergeRunner struct {
+	cfg      RefConvergeConfig
 	tagIndex []int
 }
 
-func newT8Runner(cfg T8Config) *t8Runner {
-	return &t8Runner{cfg: cfg}
+func newRefConvergeRunner(cfg RefConvergeConfig) *refConvergeRunner {
+	return &refConvergeRunner{cfg: cfg}
 }
 
-func (r *t8Runner) run(runIdx int) Row {
-	services, next := t1Plan(r.cfg.Scale, r.cfg.Changes, r.tagIndex, r.cfg.Registry, r.cfg.Image, r.cfg.Tags, false)
+func (r *refConvergeRunner) run(runIdx int) Row {
+	services, next := scalePlan(r.cfg.Scale, r.cfg.Changes, r.tagIndex, r.cfg.Registry, r.cfg.Image, r.cfg.Tags, false)
 	r.tagIndex = next
 
 	manifestDir := filepath.Join(r.cfg.Repo, r.cfg.Stack)
 	if err := os.MkdirAll(manifestDir, 0o755); err != nil {
-		return t8ErrorRow(runIdx, r.cfg, fmt.Errorf("mkdir %s: %w", manifestDir, err))
+		return refConvergeErrorRow(runIdx, r.cfg, fmt.Errorf("mkdir %s: %w", manifestDir, err))
 	}
 	manifestPath := filepath.Join(manifestDir, "deployments.yaml")
-	if err := os.WriteFile(manifestPath, []byte(t8DeploymentYAML(services)), 0o644); err != nil {
-		return t8ErrorRow(runIdx, r.cfg, fmt.Errorf("write manifest: %w", err))
+	if err := os.WriteFile(manifestPath, []byte(refConvergeDeploymentYAML(services)), 0o644); err != nil {
+		return refConvergeErrorRow(runIdx, r.cfg, fmt.Errorf("write manifest: %w", err))
 	}
 
 	relPath := filepath.Join(r.cfg.Stack, "deployments.yaml")
-	sha, err := gitCommitAndPush(r.cfg.Repo, relPath, fmt.Sprintf("t8 run %d", runIdx), r.cfg.Push)
+	sha, err := gitCommitAndPush(r.cfg.Repo, relPath, fmt.Sprintf("refConverge run %d", runIdx), r.cfg.Push)
 	if err != nil {
-		return t8ErrorRow(runIdx, r.cfg, err)
+		return refConvergeErrorRow(runIdx, r.cfg, err)
 	}
 
 	tStart := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), r.cfg.Timeout)
 	defer cancel()
 	if r.cfg.TriggerRefresh {
-		_ = t8TriggerRefresh(ctx, r.cfg.Kubeconfig, r.cfg.Namespace, r.cfg.AppName)
+		_ = refConvergeTriggerRefresh(ctx, r.cfg.Kubeconfig, r.cfg.Namespace, r.cfg.AppName)
 	}
-	err = t8AwaitConverged(ctx, r.cfg.Kubeconfig, r.cfg.Namespace, r.cfg.AppName, sha, r.cfg.PollEvery)
+	err = refConvergeAwaitConverged(ctx, r.cfg.Kubeconfig, r.cfg.Namespace, r.cfg.AppName, sha, r.cfg.PollEvery)
 	tEnd := time.Now()
 	outcome, detail := "ok", ""
 	if err != nil {
 		outcome, detail = "timeout", err.Error()
 	}
 	return Row{
-		Scenario: "t8", Condition: t8Condition(r.cfg), Run: runIdx,
+		Scenario: "refConverge", Condition: refConvergeCondition(r.cfg), Run: runIdx,
 		TStart: tStart, TEnd: tEnd, DurationMS: tEnd.Sub(tStart).Milliseconds(),
 		Outcome: outcome, Detail: detail,
 	}
 }
 
-func t8ErrorRow(runIdx int, cfg T8Config, err error) Row {
+func refConvergeErrorRow(runIdx int, cfg RefConvergeConfig, err error) Row {
 	now := time.Now()
 	return Row{
-		Scenario: "t8", Condition: t8Condition(cfg), Run: runIdx,
+		Scenario: "refConverge", Condition: refConvergeCondition(cfg), Run: runIdx,
 		TStart: now, TEnd: now, DurationMS: 0, Outcome: "error", Detail: err.Error(),
 	}
 }
 
-// RunT8 executes the t8 ArgoCD-reference convergence campaign: n runs,
-// each generating a scale-deployment manifest set, bumping changes
+// RunRefConverge executes an ArgoCD-reference convergence run: n
+// iterations, each generating a scale-deployment manifest set, bumping changes
 // deployments' image tags, committing (and optionally pushing) to the
 // repo ArgoCD watches, and measuring time to the matching Application
-// sync+health state — the same scale/changes matrix RunT1 exercises
+// sync+health state — the same scale/changes matrix RunScale exercises
 // against swarmgate, against ArgoCD instead.
-func RunT8(cfg T8Config, n int, out *CSVWriter) error {
-	r := newT8Runner(cfg)
+func RunRefConverge(cfg RefConvergeConfig, n int, out *CSVWriter) error {
+	r := newRefConvergeRunner(cfg)
 	return Run(out, n, r.run)
 }

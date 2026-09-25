@@ -78,8 +78,8 @@ func TestFromSwarm(t *testing.T) {
 				},
 				Networks: []string{"web_default", "web_frontend"},
 				Ports: []PortSpec{
-					{Target: 53, Published: 53, Protocol: "udp"},
-					{Target: 8080, Published: 80, Protocol: "tcp"},
+					{Target: 53, Published: 53, Protocol: "udp", Mode: "ingress"},
+					{Target: 8080, Published: 80, Protocol: "tcp", Mode: "ingress"},
 				},
 				Healthcheck: &HealthcheckSpec{
 					Test:        []string{"CMD", "curl", "-f", "http://localhost/"},
@@ -88,6 +88,7 @@ func TestFromSwarm(t *testing.T) {
 					Retries:     5,
 					StartPeriod: 30 * time.Second,
 				},
+				Mode: "replicated",
 			},
 		},
 		{
@@ -111,6 +112,7 @@ func TestFromSwarm(t *testing.T) {
 				Replicas: 0,
 				Labels:   map[string]string{ManagedLabel: "true", StackLabel: "web"},
 				Networks: []string{"web_default"},
+				Mode:     "replicated",
 			},
 		},
 		{
@@ -134,6 +136,7 @@ func TestFromSwarm(t *testing.T) {
 				Replicas: 0,
 				Labels:   map[string]string{ManagedLabel: "true", StackLabel: "web"},
 				Networks: []string{"web_default"},
+				Mode:     "global",
 			},
 		},
 		{
@@ -163,6 +166,7 @@ func TestFromSwarm(t *testing.T) {
 				Replicas: 1,
 				Labels:   map[string]string{ManagedLabel: "true", StackLabel: "web"},
 				Networks: []string{"web_backend", "web_default"},
+				Mode:     "replicated",
 			},
 		},
 		{
@@ -191,6 +195,7 @@ func TestFromSwarm(t *testing.T) {
 				Replicas: 2,
 				Labels:   map[string]string{ManagedLabel: "true", StackLabel: "web"},
 				Networks: []string{"web_default"},
+				Mode:     "replicated",
 			},
 		},
 		{
@@ -216,6 +221,7 @@ func TestFromSwarm(t *testing.T) {
 				Replicas: 1,
 				Labels:   map[string]string{ManagedLabel: "true", StackLabel: "web"},
 				Networks: []string{"web_default"},
+				Mode:     "replicated",
 			},
 		},
 	}

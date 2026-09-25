@@ -1,5 +1,5 @@
 # harness-hosts.yaml
-# Maps a role name (the harness t3 scenario's --target) to the shell commands
+# Maps a role name (the harness fault scenario's --target) to the shell commands
 # that kill and restore it. Roles are not a fixed enum: whatever keys appear
 # here are the valid --target values. Commands are opaque strings executed
 # via `sh -c` on the machine running the harness; they are never parsed or

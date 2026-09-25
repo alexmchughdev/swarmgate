@@ -40,21 +40,20 @@ func StrayProcessPIDs(procDir, name string, self int) ([]int, error) {
 }
 
 // CheckNoStraySwarmgate refuses to proceed if more than one swarmgate
-// process is running on this host. A campaign drives a single running
+// process is running on this host. A harness run drives a single running
 // instance (the one under test); anything beyond that is leftover debris
 // from an earlier manual run or demo, and every extra instance polls and
 // reconciles the same Docker daemon concurrently — corrupting
 // measurements with unrelated apply/converge/API activity, and in
-// extreme cases starving the Docker API enough to make the campaign's
-// own AwaitConverged calls time out. This is what actually happened
-// during this project's own pre-public review: seven abandoned swarmgate
-// processes left running from unrelated demos caused exactly this
-// failure mode against a real cluster.
+// extreme cases starving the Docker API enough to make this run's own
+// AwaitConverged calls time out. Seven abandoned swarmgate processes left
+// running from unrelated demos have caused exactly this failure mode
+// against a real cluster before.
 //
 // Linux-only: procDir is read via the /proc filesystem interface, which
 // has no portable equivalent. If procDir can't be read at all (a
 // non-Linux host, or /proc genuinely unavailable), the check is skipped
-// rather than blocking the campaign outright — this is a safety net, not
+// rather than blocking the run outright — this is a safety net, not
 // a hard platform requirement.
 func CheckNoStraySwarmgate() error {
 	pids, err := StrayProcessPIDs("/proc", "swarmgate", os.Getpid())
@@ -62,7 +61,7 @@ func CheckNoStraySwarmgate() error {
 		return nil
 	}
 	if len(pids) > 1 {
-		return fmt.Errorf("refusing to start: %d swarmgate processes are running on this host (pids %v), expected at most 1 (the instance under test) — stop the extras before running a campaign", len(pids), pids)
+		return fmt.Errorf("refusing to start: %d swarmgate processes are running on this host (pids %v), expected at most 1 (the instance under test) — stop the extras before running the harness", len(pids), pids)
 	}
 	return nil
 }

@@ -55,6 +55,7 @@ func TestNormalize(t *testing.T) {
 			want: ServiceSpec{
 				Labels:   map[string]string{"swarmgate.tier": "backend", ManagedLabel: "true", StackLabel: "web"},
 				Networks: []string{"web_default"},
+				Mode:     "replicated",
 			},
 		},
 		{
@@ -63,6 +64,7 @@ func TestNormalize(t *testing.T) {
 			want: ServiceSpec{
 				Labels:   map[string]string{ManagedLabel: "true", StackLabel: "web"},
 				Networks: []string{"web_default"},
+				Mode:     "replicated",
 			},
 		},
 		{
@@ -71,6 +73,7 @@ func TestNormalize(t *testing.T) {
 			want: ServiceSpec{
 				Labels:   map[string]string{ManagedLabel: "true", StackLabel: "web"},
 				Networks: []string{"web_default"},
+				Mode:     "replicated",
 			},
 		},
 		{
@@ -79,6 +82,7 @@ func TestNormalize(t *testing.T) {
 			want: ServiceSpec{
 				Labels:   map[string]string{ManagedLabel: "true", StackLabel: "web"},
 				Networks: []string{"alpha", "mid", "zeta"},
+				Mode:     "replicated",
 			},
 		},
 		{
@@ -93,11 +97,12 @@ func TestNormalize(t *testing.T) {
 				Labels:   map[string]string{ManagedLabel: "true", StackLabel: "web"},
 				Networks: []string{"web_default"},
 				Ports: []PortSpec{
-					{Target: 8080, Published: 80, Protocol: "sctp"},
-					{Target: 8080, Published: 80, Protocol: "tcp"},
-					{Target: 8080, Published: 81, Protocol: "tcp"},
-					{Target: 9000, Published: 9000, Protocol: "udp"},
+					{Target: 8080, Published: 80, Protocol: "sctp", Mode: "ingress"},
+					{Target: 8080, Published: 80, Protocol: "tcp", Mode: "ingress"},
+					{Target: 8080, Published: 81, Protocol: "tcp", Mode: "ingress"},
+					{Target: 9000, Published: 9000, Protocol: "udp", Mode: "ingress"},
 				},
+				Mode: "replicated",
 			},
 		},
 		{
@@ -111,6 +116,7 @@ func TestNormalize(t *testing.T) {
 				Env:      map[string]string{"A": "1", "B": "2", "EMPTY": ""},
 				Labels:   map[string]string{ManagedLabel: "true", StackLabel: "web"},
 				Networks: []string{"web_default"},
+				Mode:     "replicated",
 			},
 		},
 	}

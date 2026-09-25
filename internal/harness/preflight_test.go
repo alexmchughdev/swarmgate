@@ -73,7 +73,7 @@ func TestStrayProcessPIDsNoMatches(t *testing.T) {
 
 func TestCheckNoStraySwarmgateUnreadableProcDirIsSkipped(t *testing.T) {
 	// CheckNoStraySwarmgate hardcodes "/proc"; on a host where that's
-	// unreadable (non-Linux), it must not block the campaign.
+	// unreadable (non-Linux), it must not block the run.
 	if err := CheckNoStraySwarmgate(); err != nil {
 		t.Skipf("this host has a readable /proc with >1 real swarmgate process; skipping: %v", err)
 	}

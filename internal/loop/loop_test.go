@@ -185,7 +185,7 @@ func TestCycleHappyPathEventOrder(t *testing.T) {
 	}
 }
 
-func TestCycleApplyErrorIsolationAndFR17(t *testing.T) {
+func TestCycleApplyErrorIsolationRecordsBelievedState(t *testing.T) {
 	rec := &captureRecorder{}
 	src := &fakeSource{commit: source.Commit{SHA: "abc123"}}
 	desired := spec.DesiredState{Services: map[string]spec.ServiceSpec{

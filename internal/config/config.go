@@ -23,6 +23,7 @@ const (
 // environment overrides applied, defaults filled in, and validation passed.
 type Config struct {
 	Git             Git
+	EnvFileRoot     string
 	PollInterval    time.Duration
 	Events          Events
 	Prune           bool
@@ -117,6 +118,7 @@ type rawConfig struct {
 	} `yaml:"docker"`
 	ConvergeTimeout string `yaml:"converge_timeout"`
 	StageTimeout    string `yaml:"stage_timeout"`
+	EnvFileRoot     string `yaml:"env_file_root"`
 }
 
 // envOverrides maps every SWARMGATE_* variable to its raw config field.
@@ -131,6 +133,7 @@ var envOverrides = []struct {
 	{"SWARMGATE_GIT_PATH", func(r *rawConfig, v string) error { r.Git.Path = v; return nil }},
 	{"SWARMGATE_GIT_SSH_KEY_FILE", func(r *rawConfig, v string) error { r.Git.SSHKeyFile = v; return nil }},
 	{"SWARMGATE_GIT_INTERPOLATION_VARS", func(r *rawConfig, v string) error { r.Git.InterpolationVars = splitCommaList(v); return nil }},
+	{"SWARMGATE_ENV_FILE_ROOT", func(r *rawConfig, v string) error { r.EnvFileRoot = v; return nil }},
 	{"SWARMGATE_POLL_INTERVAL", func(r *rawConfig, v string) error { r.PollInterval = v; return nil }},
 	{"SWARMGATE_EVENTS_WAKE", func(r *rawConfig, v string) error { return setBool(&r.Events.Wake, "SWARMGATE_EVENTS_WAKE", v) }},
 	{"SWARMGATE_PRUNE", func(r *rawConfig, v string) error { return setBool(&r.Prune, "SWARMGATE_PRUNE", v) }},
@@ -187,6 +190,7 @@ func Load(path string) (Config, error) {
 	}
 
 	cfg := Config{
+		EnvFileRoot: raw.EnvFileRoot,
 		Git: Git{
 			URL:               raw.Git.URL,
 			Branch:            defaultString(raw.Git.Branch, "main"),

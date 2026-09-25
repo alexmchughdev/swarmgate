@@ -8,12 +8,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func TestT8DeploymentYAMLRendersOneDocumentPerService(t *testing.T) {
-	services := []t1Service{
+func TestRefConvergeDeploymentYAMLRendersOneDocumentPerService(t *testing.T) {
+	services := []scaleService{
 		{Name: "web1", Image: "nginx:1.24-alpine"},
 		{Name: "web2", Image: "nginx:1.25-alpine"},
 	}
-	got := t8DeploymentYAML(services)
+	got := refConvergeDeploymentYAML(services)
 	if strings.Count(got, "---\n") != 1 {
 		t.Fatalf("want exactly one document separator for 2 services, got:\n%s", got)
 	}
@@ -28,8 +28,8 @@ func TestT8DeploymentYAMLRendersOneDocumentPerService(t *testing.T) {
 	}
 }
 
-func TestT8DeploymentYAMLIncludesReadinessProbeMatchingT1Healthcheck(t *testing.T) {
-	got := t8DeploymentYAML([]t1Service{{Name: "web1", Image: "nginx:1.24-alpine"}})
+func TestRefConvergeDeploymentYAMLIncludesReadinessProbeMatchingScaleHealthcheck(t *testing.T) {
+	got := refConvergeDeploymentYAML([]scaleService{{Name: "web1", Image: "nginx:1.24-alpine"}})
 	for _, want := range []string{
 		"readinessProbe:",
 		"path: /health",
@@ -50,19 +50,19 @@ func TestT8DeploymentYAMLIncludesReadinessProbeMatchingT1Healthcheck(t *testing.
 	}
 }
 
-func TestT8DeploymentYAMLSingleServiceHasNoSeparator(t *testing.T) {
-	got := t8DeploymentYAML([]t1Service{{Name: "web1", Image: "nginx:1.24-alpine"}})
+func TestRefConvergeDeploymentYAMLSingleServiceHasNoSeparator(t *testing.T) {
+	got := refConvergeDeploymentYAML([]scaleService{{Name: "web1", Image: "nginx:1.24-alpine"}})
 	if strings.Contains(got, "---") {
 		t.Fatalf("single-service manifest should have no document separator:\n%s", got)
 	}
 }
 
-func TestT8Condition(t *testing.T) {
-	cfg := T8Config{Scale: 10, Changes: 5, Label: "events=on"}
-	got := t8Condition(cfg)
+func TestRefConvergeCondition(t *testing.T) {
+	cfg := RefConvergeConfig{Scale: 10, Changes: 5, Label: "events=on"}
+	got := refConvergeCondition(cfg)
 	want := "scale=10;changes=5;events=on"
 	if got != want {
-		t.Fatalf("t8Condition = %q, want %q", got, want)
+		t.Fatalf("refConvergeCondition = %q, want %q", got, want)
 	}
 }
 

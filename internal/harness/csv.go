@@ -10,7 +10,7 @@ import (
 // csvHeader is the fixed results.csv column order.
 var csvHeader = []string{"scenario", "condition", "run", "t_start", "t_end", "duration_ms", "outcome", "detail"}
 
-// Row is one results.csv record. Scenario is one of t1..t6; Outcome is one
+// Row is one results.csv record. Scenario is one of scale..verify; Outcome is one
 // of ok|timeout|error; Condition and Detail are scenario-specific free text.
 type Row struct {
 	Scenario   string
@@ -45,7 +45,7 @@ type CSVWriter struct {
 
 // OpenCSVWriter opens path for appending, creating it and writing the header
 // if it does not already exist or is empty. An existing non-empty file (a
-// prior campaign's output) is appended to as-is: the header is written at
+// prior run's output) is appended to as-is: the header is written at
 // most once per file.
 func OpenCSVWriter(path string) (*CSVWriter, error) {
 	info, statErr := os.Stat(path)
@@ -70,8 +70,8 @@ func OpenCSVWriter(path string) (*CSVWriter, error) {
 	return &CSVWriter{f: f, w: w}, nil
 }
 
-// Write appends one row and flushes immediately, so a campaign killed
-// mid-run leaves every completed row on disk.
+// Write appends one row and flushes immediately, so a harness process
+// killed mid-run leaves every completed row on disk.
 func (c *CSVWriter) Write(r Row) error {
 	if err := c.w.Write(r.record()); err != nil {
 		return fmt.Errorf("write row: %w", err)

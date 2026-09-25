@@ -10,17 +10,17 @@ import (
 )
 
 func init() {
-	register(scenarioCmd{name: "t5", bind: bindT5})
+	register(scenarioCmd{name: "latency", bind: bindLatency})
 }
 
-func bindT5(fs *flag.FlagSet, sf *sharedFlags) func() error {
+func bindLatency(fs *flag.FlagSet, sf *sharedFlags) func() error {
 	// Not a fs.Duration flag: "unreachable" is not a valid time.Duration
-	// literal, so validation is deferred to harness.RunT5 via a plain string.
+	// literal, so validation is deferred to harness.RunLatency via a plain string.
 	latency := fs.String("latency", "0", "registry latency: 0|500ms|5s|unreachable")
 	registryHost := fs.String("registry-host", "", "ssh target for the registry host, e.g. user@registry-host (required)")
 	iface := fs.String("iface", "eth0", "interface tc operates on at the registry host")
 	repo := fs.String("repo", "", "path to an existing working-tree git clone the harness commits to (required)")
-	stack := fs.String("stack", "t5", "stack name; file is <stack>.yaml at the repo root")
+	stack := fs.String("stack", "latency", "stack name; file is <stack>.yaml at the repo root")
 	service := fs.String("service", "web1", "service name bumped each run")
 	push := fs.Bool("push", true, "push after commit; false = commit only, for local-remote setups")
 	timeout := fs.Duration("timeout", 5*time.Minute, "per-run convergence timeout")
@@ -39,7 +39,7 @@ func bindT5(fs *flag.FlagSet, sf *sharedFlags) func() error {
 		if *tags != "" {
 			tagList = strings.Split(*tags, ",")
 		}
-		cfg := harness.T5Config{
+		cfg := harness.LatencyConfig{
 			Repo: *repo, Stack: *stack, Service: *service,
 			RegistryHost: *registryHost, Iface: *iface, Latency: *latency,
 			Push: *push, EventsFile: sf.eventsFile, Timeout: *timeout, Label: sf.label,
@@ -50,6 +50,6 @@ func bindT5(fs *flag.FlagSet, sf *sharedFlags) func() error {
 			return err
 		}
 		defer out.Close()
-		return harness.RunT5(cfg, sf.n, out)
+		return harness.RunLatency(cfg, sf.n, out)
 	}
 }
