@@ -154,6 +154,18 @@ must remain inside the configured root, including through symlinks.
 
 Bind mounts are denied unless their source resolves beneath a `volume_bind_roots` directory or equals a configured exact file or socket entry. Symlinks are resolved before either comparison. `volume_bind_roots` cannot include `/`; to allow the host filesystem for a host-metrics service, configure an exact `volume_bind_mounts` entry with `source: /` and `read_only: true`. Exact entries are read-only by design and do not allow any other host path.
 
+For example, this permits services to bind files below `/srv/swarmgate-data` and to consume the Docker socket without opening up other host paths:
+
+```yaml
+volume_bind_roots:
+  - /srv/swarmgate-data
+volume_bind_mounts:
+  - source: /var/run/docker.sock
+    read_only: true
+```
+
+A stack may then use `/srv/swarmgate-data/app/config.yaml` or `/var/run/docker.sock` as bind sources. A source outside those entries, including one reached through a symlink, is rejected before it is applied.
+
 Supported scalar fields also have a `SWARMGATE_*` environment override — see
 `internal/config/config.go`'s `envOverrides` table for the exact names.
 
