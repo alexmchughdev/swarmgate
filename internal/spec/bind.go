@@ -51,7 +51,7 @@ func resolvePathWithinRoot(path string, roots []string) (string, error) {
 			return realPath, nil
 		}
 	}
-	return "", fmt.Errorf("bind source %q is not within volume_bind_roots", path)
+	return "", fmt.Errorf("bind source %q resolves to %q outside configured volume_bind_roots", path, realPath)
 }
 
 func resolveExactBindMount(path string, readOnly bool, allowances []BindMountAllowance) (string, bool, error) {

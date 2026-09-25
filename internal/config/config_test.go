@@ -60,6 +60,7 @@ func TestLoadValid(t *testing.T) {
 			Mode:       GateModeAbortCycle,
 			PolicyFile: "/etc/swarmgate/policy.yaml",
 		},
+		VolumeBindRoots: []string{"/datavol/data", "/var/lib/swarmgate"},
 		Telemetry:       Telemetry{Out: "/var/lib/swarmgate/events.jsonl"},
 		Docker:          Docker{Host: "unix:///var/run/docker.sock"},
 		ConvergeTimeout: 10 * time.Minute,

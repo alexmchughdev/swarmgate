@@ -333,6 +333,11 @@ func cycle(ctx context.Context, deps Deps, cfg config.Config, st *cycleState, ru
 		emitDrift(d, st, emit, prevCycleStart)
 	}
 	changes := plan(d, cfg.Prune)
+	for i := range changes {
+		if changes[i].Action != apply.ActionRemove && len(desired.Configs) > 0 {
+			changes[i].ConfigData = desired.Configs
+		}
+	}
 
 	// Scaled by len(changes): gate.Verify checks every change in the
 	// batch, potentially one registry/tlog round trip each, so a single
@@ -362,14 +367,26 @@ func cycle(ctx context.Context, deps Deps, cfg config.Config, st *cycleState, ru
 	}
 
 	var applied, pending []string
+	appliedServices := make(map[string]bool)
 	var lastErr error
+	failedRecreates := make(map[string]bool)
 	for _, c := range changes {
 		t = deps.Now()
+		if c.Action == apply.ActionCreate && c.Recreate && failedRecreates[c.Spec.Name] {
+			err := errors.New("recreate skipped because service removal failed")
+			emit(telemetry.Event{Stage: telemetry.StageApply, Service: c.Spec.Name, Fields: map[string]any{
+				"action": string(c.Action), "outcome": "skipped", "error": err.Error(),
+			}})
+			continue
+		}
 		applyCtx, cancel := context.WithTimeout(ctx, cfg.StageTimeout)
 		err := deps.Applier.Apply(applyCtx, c)
 		cancel()
 		fields := map[string]any{"action": string(c.Action), "outcome": "ok"}
 		if err != nil {
+			if c.Action == apply.ActionRemove && c.Recreate {
+				failedRecreates[c.Spec.Name] = true
+			}
 			fields["outcome"] = "error"
 			fields["error"] = err.Error()
 		}
@@ -385,7 +402,12 @@ func cycle(ctx context.Context, deps Deps, cfg config.Config, st *cycleState, ru
 			lastErr = err
 			continue
 		}
-		applied = append(applied, c.Spec.Name)
+		if c.Recreate {
+			applied = append(applied, c.Spec.Name+":"+string(c.Action))
+		} else {
+			applied = append(applied, c.Spec.Name)
+		}
+		appliedServices[c.Spec.Name] = true
 	}
 	if len(pending) > 0 {
 		// Record believed state so a mid-apply failure is
@@ -417,7 +439,7 @@ func cycle(ctx context.Context, deps Deps, cfg config.Config, st *cycleState, ru
 
 	emit(telemetry.Event{
 		Stage: telemetry.StageConverged, DurMS: ms(deps.Now().Sub(cycleStart)),
-		Fields: map[string]any{"commit": commit.SHA, "services": len(applied)},
+		Fields: map[string]any{"commit": commit.SHA, "services": len(appliedServices)},
 	})
 	return nil
 }
@@ -428,11 +450,28 @@ func cycle(ctx context.Context, deps Deps, cfg config.Config, st *cycleState, ru
 // emitDrift's responsibility, not plan's — it needs commit/hint state plan
 // has no reason to see.
 func plan(d diff.Diff, prune bool) []apply.Change {
-	changes := make([]apply.Change, 0, len(d.Creates)+len(d.Updates)+len(d.Removes))
+	changes := make([]apply.Change, 0, len(d.Creates)+len(d.Updates)+len(d.Removes)+len(d.Updates))
+	recreated := make(map[string]bool)
+	// An attachment-only update cannot be applied in place on Swarm. Pair
+	// its removal and replacement create, keeping them adjacent so the
+	// apply loop can suppress the create if removal fails.
+	for _, u := range d.Updates {
+		if !attachmentOnlyUpdate(u) {
+			continue
+		}
+		recreated[u.Name] = true
+		changes = append(changes,
+			apply.Change{Action: apply.ActionRemove, Spec: u.Old, Recreate: true},
+			apply.Change{Action: apply.ActionCreate, Spec: u.New, Recreate: true},
+		)
+	}
 	for _, s := range d.Creates {
 		changes = append(changes, apply.Change{Action: apply.ActionCreate, Spec: s})
 	}
 	for _, u := range d.Updates {
+		if recreated[u.Name] {
+			continue
+		}
 		changes = append(changes, apply.Change{Action: apply.ActionUpdate, Spec: u.New})
 	}
 	if prune {
@@ -441,6 +480,18 @@ func plan(d diff.Diff, prune bool) []apply.Change {
 		}
 	}
 	return changes
+}
+
+func attachmentOnlyUpdate(u diff.Change) bool {
+	if len(u.Changed) == 0 {
+		return false
+	}
+	for _, field := range u.Changed {
+		if field != "configs" && field != "secrets" {
+			return false
+		}
+	}
+	return true
 }
 
 // changesToAwaitDiff rebuilds a diff.Diff from changes for AwaitConverged,
@@ -457,7 +508,9 @@ func changesToAwaitDiff(changes []apply.Change) diff.Diff {
 		case apply.ActionUpdate:
 			d.Updates = append(d.Updates, diff.Change{Name: c.Spec.Name, New: c.Spec})
 		case apply.ActionRemove:
-			d.Removes = append(d.Removes, c.Spec)
+			if !c.Recreate {
+				d.Removes = append(d.Removes, c.Spec)
+			}
 		}
 	}
 	return d
@@ -483,13 +536,11 @@ func changesToAwaitDiff(changes []apply.Change) diff.Diff {
 // the caller in cycle() applies nothing at all when it's false, regardless
 // of how many changes did pass.
 func verify(ctx context.Context, g gate.Gate, changes []apply.Change, emit func(telemetry.Event), now func() time.Time) (passed []apply.Change, allPassed bool, err error) {
-	var toVerify, removes []apply.Change
+	var toVerify []apply.Change
 	for _, c := range changes {
-		if c.Action == apply.ActionRemove {
-			removes = append(removes, c)
-			continue
+		if c.Action != apply.ActionRemove {
+			toVerify = append(toVerify, c)
 		}
-		toVerify = append(toVerify, c)
 	}
 
 	t := now()
@@ -500,8 +551,9 @@ func verify(ctx context.Context, g gate.Gate, changes []apply.Change, emit func(
 	// One batched Verify call covers every service; each per-service event
 	// carries the whole batch's duration, not an individual share of it.
 	verifyDur := ms(now().Sub(t))
-	passed = make([]apply.Change, 0, len(toVerify)+len(removes))
+	passed = make([]apply.Change, 0, len(changes))
 	allPassed = true
+	passByIndex := make([]bool, len(verdicts))
 	for i, v := range verdicts {
 		fields := map[string]any{"image": v.Image, "outcome": "pass"}
 		if !v.Pass {
@@ -511,10 +563,32 @@ func verify(ctx context.Context, g gate.Gate, changes []apply.Change, emit func(
 		}
 		emit(telemetry.Event{Stage: telemetry.StageVerify, Service: v.Service, DurMS: verifyDur, Fields: fields})
 		if v.Pass {
-			passed = append(passed, toVerify[i])
+			passByIndex[i] = true
 		}
 	}
-	passed = append(passed, removes...)
+	verifyIndex := 0
+	passedByChange := make([]bool, len(changes))
+	for i, c := range changes {
+		if c.Action == apply.ActionRemove {
+			if c.Recreate && i+1 < len(changes) && changes[i+1].Recreate && changes[i+1].Action == apply.ActionCreate {
+				if verifyIndex < len(passByIndex) && passByIndex[verifyIndex] {
+					passedByChange[i] = true
+				}
+			} else {
+				passedByChange[i] = true
+			}
+			continue
+		}
+		if verifyIndex < len(passByIndex) && passByIndex[verifyIndex] {
+			passedByChange[i] = true
+		}
+		verifyIndex++
+	}
+	for i, c := range changes {
+		if passedByChange[i] {
+			passed = append(passed, c)
+		}
+	}
 	return passed, allPassed, nil
 }
 

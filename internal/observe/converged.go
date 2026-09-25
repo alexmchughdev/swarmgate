@@ -140,7 +140,13 @@ func (o *SwarmObserver) checkTarget(ctx context.Context, t awaitTarget, netNames
 		return fmt.Sprintf("inspect: %v", err), false
 	}
 
-	if got := spec.FromSwarm(svc, netNames); !reflect.DeepEqual(got, t.desired) {
+	got := spec.FromSwarm(svc, netNames)
+	for key := range got.DeployLabels {
+		if _, wanted := t.desired.DeployLabels[key]; !wanted {
+			delete(got.DeployLabels, key)
+		}
+	}
+	if !reflect.DeepEqual(got, t.desired) {
 		return "observed spec differs from desired (clause a)", false
 	}
 

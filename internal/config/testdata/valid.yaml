@@ -14,6 +14,7 @@ gate:
   enabled: true
   mode: "abort-cycle"
   policy_file: "/etc/swarmgate/policy.yaml"
+volume_bind_roots: ["/datavol/data", "/var/lib/swarmgate"]
 telemetry:
   out: "/var/lib/swarmgate/events.jsonl"
 docker:

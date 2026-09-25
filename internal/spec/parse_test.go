@@ -46,6 +46,10 @@ func TestParseEnvFileHostRoot(t *testing.T) {
 		}
 	})
 	t.Run("path escape", func(t *testing.T) {
+		outside := filepath.Join(filepath.Dir(root), "outside.env")
+		if err := os.WriteFile(outside, []byte("OUTSIDE=yes\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 		escape := source.StackFile{Name: "app", Content: []byte("services:\n  web:\n    image: nginx:1.27\n    env_file: ../outside.env\n")}
 		if _, err := Parse([]source.StackFile{escape}, nil, root); err == nil || !strings.Contains(err.Error(), "escapes env_file_root") {
 			t.Fatalf("Parse error = %v, want path escape", err)
@@ -56,6 +60,101 @@ func TestParseEnvFileHostRoot(t *testing.T) {
 			t.Fatalf("Parse error = %v, want clear configuration rejection", err)
 		}
 	})
+}
+
+func TestParseGitDefinedConfig(t *testing.T) {
+	f := source.StackFile{Name: "monitoring", Path: "stacks/00-monitoring.yml", Content: []byte(`services:
+  web:
+    image: nginx:1.27
+    configs:
+      - source: nginx_conf
+        target: /etc/nginx/entrypoint.conf
+        mode: 0555
+configs:
+  nginx_conf:
+    name: nginx_conf_v4
+    file: ./swarm-config/nginx.conf
+`), Files: map[string][]byte{"stacks/swarm-config/nginx.conf": []byte("new config")}}
+	got, err := Parse([]source.StackFile{f}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got.Configs["nginx_conf_v4"].Data) != "new config" {
+		t.Fatalf("config payload = %+v", got.Configs)
+	}
+	refs := got.Services["monitoring_web"].Configs
+	if len(refs) != 1 || refs[0].Source != "nginx_conf_v4" || refs[0].Mode != 0555 {
+		t.Fatalf("config refs = %+v", refs)
+	}
+}
+
+func TestParseEnvFileAbsolutePathsStayWithinRoot(t *testing.T) {
+	root := t.TempDir()
+	inside := filepath.Join(root, "app.env")
+	if err := os.WriteFile(inside, []byte("FROM_FILE=resolved\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "linked.env")
+	if err := os.Symlink(inside, link); err != nil {
+		t.Fatal(err)
+	}
+	parsePath := func(path, envRoot string) error {
+		f := source.StackFile{Name: "app", Content: []byte(fmt.Sprintf("services:\n  web:\n    image: nginx:1.27\n    env_file: %q\n", path))}
+		_, err := Parse([]source.StackFile{f}, nil, envRoot)
+		return err
+	}
+	for _, p := range []string{inside, link} {
+		if err := parsePath(p, root); err != nil {
+			t.Errorf("Parse absolute env_file %q: %v", p, err)
+		}
+	}
+	outside := filepath.Join(t.TempDir(), "outside.env")
+	if err := os.WriteFile(outside, []byte("SECRET=outside\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := parsePath(outside, root); err == nil || !strings.Contains(err.Error(), "escapes env_file_root") {
+		t.Fatalf("Parse outside absolute env_file error = %v, want root escape", err)
+	}
+	if err := parsePath(inside, ""); err == nil || !strings.Contains(err.Error(), "env_file_root is configured") {
+		t.Fatalf("Parse without env_file_root error = %v, want configuration rejection", err)
+	}
+}
+
+func TestParseBindMountVolumeAllowedRoots(t *testing.T) {
+	root := t.TempDir()
+	otherRoot := t.TempDir()
+	data := filepath.Join(root, "data")
+	if err := os.Mkdir(data, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "data-link")
+	if err := os.Symlink(data, link); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(otherRoot, "outside")
+	if err := os.Mkdir(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	parse := func(sourcePath string, roots []string) (DesiredState, error) {
+		f := source.StackFile{Name: "app", Content: []byte(fmt.Sprintf("services:\n  web:\n    image: nginx:1.27\n    volumes:\n      - type: bind\n        source: %q\n        target: /srv/data\n", sourcePath))}
+		return ParseWithRoots([]source.StackFile{f}, nil, "", roots)
+	}
+	got, err := parse(link, []string{otherRoot, root})
+	if err != nil {
+		t.Fatalf("Parse allowed bind mount: %v", err)
+	}
+	if got.Services["app_web"].Volumes[0].Source != data {
+		t.Errorf("bind source = %q, want resolved path %q", got.Services["app_web"].Volumes[0].Source, data)
+	}
+	if _, err := parse(data, nil); err == nil || !strings.Contains(err.Error(), "volume_bind_roots") {
+		t.Errorf("Parse with no roots error = %v, want explicit opt-in rejection", err)
+	}
+	if _, err := parse(outside, []string{root}); err == nil || !strings.Contains(err.Error(), "outside configured volume_bind_roots") {
+		t.Errorf("Parse outside allowed roots error = %v, want rejection", err)
+	}
+	if _, err := parse("./relative-data", []string{root}); err == nil || !strings.Contains(err.Error(), "must be an absolute path") {
+		t.Errorf("Parse relative bind source error = %v, want explicit relative-path rejection", err)
+	}
 }
 
 func TestParseNormalForm(t *testing.T) {
@@ -392,7 +491,7 @@ services:
     volumes:
       - /host/data:/var/lib/data
 `,
-			wantErr: "only named local-driver volumes are supported",
+			wantErr: "configure volume_bind_roots",
 		},
 		{
 			name: "volumes: top-level declaration with a driver rejected",
@@ -440,7 +539,7 @@ configs:
 			},
 		},
 		{
-			name: "configs: inline file content rejected",
+			name: "configs: file content accepted",
 			yaml: `
 services:
   web:
@@ -452,7 +551,11 @@ configs:
   myconf:
     file: ./myconf.txt
 `,
-			wantErr: `configs "myconf" must be external only`,
+			check: func(t *testing.T, svc ServiceSpec) {
+				if !reflect.DeepEqual(svc.Configs, []FileRef{{Source: "myconf", Target: "/etc/myconf"}}) {
+					t.Fatalf("Configs = %+v", svc.Configs)
+				}
+			},
 		},
 		{
 			name: "secrets: external reference accepted",
@@ -711,7 +814,7 @@ services:
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			f := source.StackFile{Name: "fields", Content: []byte(tt.yaml)}
+			f := source.StackFile{Name: "fields", Content: []byte(tt.yaml), Files: map[string][]byte{"myconf.txt": []byte("config contents")}}
 			got, err := Parse([]source.StackFile{f}, nil)
 			if tt.wantErr != "" {
 				if err == nil {
@@ -785,13 +888,16 @@ func TestParseAllowlistedBindMounts(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = listener.Close() })
+	if err := os.Mkdir(filepath.Join(root, "other"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	linkDir := filepath.Join(root, "run")
 	if err := os.Symlink(root, linkDir); err != nil {
 		t.Fatal(err)
 	}
 
-	parse := func(source string, roots []string, exact []BindMountAllowance, readOnly bool) error {
-		content := fmt.Sprintf("services:\n  app:\n    image: nginx:1.27\n    volumes:\n      - type: bind\n        source: %s\n        target: /host\n        read_only: %t\n", source, readOnly)
+	parse := func(src string, roots []string, exact []BindMountAllowance, readOnly bool) error {
+		content := fmt.Sprintf("services:\n  app:\n    image: nginx:1.27\n    volumes:\n      - type: bind\n        source: %s\n        target: /host\n        read_only: %t\n", src, readOnly)
 		_, err := ParseWithBindAllowlist([]source.StackFile{{Name: "app", Content: []byte(content)}}, nil, "", roots, exact)
 		return err
 	}

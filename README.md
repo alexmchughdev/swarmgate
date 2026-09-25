@@ -146,13 +146,17 @@ stage_timeout: "30s"                  # default 30s; bounds each individual
                                        # remote can't hang the whole cycle
 ```
 
-Service `env_file` entries are resolved relative to `env_file_root` on the
+Relative service `env_file` entries are resolved under `env_file_root` on the
 swarmgate host (for example, `env_file: web.env` reads
-`/datavol/env/web.env`). The root is optional; stacks that use `env_file` are
-rejected with a configuration-specific error when it is unset. Resolved files
-must remain inside the configured root, including through symlinks.
+`/datavol/env/web.env`). Absolute entries are also accepted when they resolve
+inside that root. The root is optional; stacks that use `env_file` are rejected
+with a configuration-specific error when it is unset. Resolved files must
+remain inside the configured root, including through symlinks.
 
-Bind mounts are denied unless their source resolves beneath a `volume_bind_roots` directory or equals a configured exact file or socket entry. Symlinks are resolved before either comparison. `volume_bind_roots` cannot include `/`; to allow the host filesystem for a host-metrics service, configure an exact `volume_bind_mounts` entry with `source: /` and `read_only: true`. Exact entries are read-only by design and do not allow any other host path.
+Unreferenced Swarm configs and secrets are retained after a service
+replacement; cleanup remains an operator-managed task.
+
+Bind mounts are denied unless their source is an absolute path that resolves beneath a `volume_bind_roots` directory or equals a configured exact file or socket entry. Symlinks are resolved before either comparison. `volume_bind_roots` cannot include `/`; to allow the host filesystem for a host-metrics service, configure an exact `volume_bind_mounts` entry with `source: /` and `read_only: true`. Exact entries are read-only by design and do not allow any other host path.
 
 For example, this permits services to bind files below `/srv/swarmgate-data` and to consume the Docker socket without opening up other host paths:
 
@@ -165,6 +169,13 @@ volume_bind_mounts:
 ```
 
 A stack may then use `/srv/swarmgate-data/app/config.yaml` or `/var/run/docker.sock` as bind sources. A source outside those entries, including one reached through a symlink, is rejected before it is applied.
+
+Top-level configs may use Compose `file:` declarations. Those paths are
+relative to the stack file in the Git repository, and their bytes are read
+from the same commit as the stack. Swarm configs are immutable, so change the
+config object's name (the `_vN` convention) whenever its content changes;
+existing objects with a declared name are treated as already correct without
+content comparison. Secrets remain external-only.
 
 Supported scalar fields also have a `SWARMGATE_*` environment override — see
 `internal/config/config.go`'s `envOverrides` table for the exact names.
