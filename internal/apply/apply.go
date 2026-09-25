@@ -32,6 +32,10 @@ const (
 type Change struct {
 	Action Action
 	Spec   spec.ServiceSpec
+	// Recreate pairs the config/secret-only replacement remove and create
+	// operations so the loop can preserve their dependency and await only
+	// the final created state.
+	Recreate bool
 }
 
 // Applier executes a single change against the cluster. Implementations

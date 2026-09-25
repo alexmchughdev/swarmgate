@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -25,18 +26,6 @@ func resolveStackEnvFiles(f source.StackFile, root string) (source.StackFile, er
 	if services == nil || services.Kind != yaml.MappingNode {
 		return f, nil
 	}
-	var rootAbs, rootReal string
-	if root != "" {
-		var err error
-		rootAbs, err = filepath.Abs(root)
-		if err != nil {
-			return f, fmt.Errorf("env_file_root: %w", err)
-		}
-		rootReal, err = filepath.EvalSymlinks(rootAbs)
-		if err != nil {
-			return f, fmt.Errorf("env_file_root %q: %w", root, err)
-		}
-	}
 	var paths []*yaml.Node
 	for i := 0; i+1 < len(services.Content); i += 2 {
 		svc := resolveAlias(services.Content[i+1])
@@ -53,21 +42,16 @@ func resolveStackEnvFiles(f source.StackFile, root string) (source.StackFile, er
 		if root == "" {
 			return f, fmt.Errorf("env_file is not supported unless env_file_root is configured")
 		}
-		if filepath.IsAbs(p.Value) {
-			return f, fmt.Errorf("env_file path %q must be relative to env_file_root", p.Value)
+		candidate := p.Value
+		if !filepath.IsAbs(candidate) {
+			candidate = filepath.Join(root, filepath.FromSlash(candidate))
 		}
-		joined := filepath.Clean(filepath.Join(rootAbs, filepath.FromSlash(p.Value)))
-		rel, err := filepath.Rel(rootAbs, joined)
-		if err != nil || rel == ".." || len(rel) >= 3 && rel[:3] == ".."+string(filepath.Separator) {
-			return f, fmt.Errorf("env_file path %q escapes env_file_root", p.Value)
-		}
-		real, err := filepath.EvalSymlinks(joined)
+		real, err := resolvePathWithinRoot(candidate, root)
 		if err != nil {
-			return f, fmt.Errorf("env_file %q: %w", p.Value, err)
-		}
-		realRel, err := filepath.Rel(rootReal, real)
-		if err != nil || realRel == ".." || len(realRel) >= 3 && realRel[:3] == ".."+string(filepath.Separator) {
-			return f, fmt.Errorf("env_file path %q escapes env_file_root through a symlink", p.Value)
+			if strings.Contains(err.Error(), "escapes allowed root") {
+				return f, fmt.Errorf("env_file path %q escapes env_file_root", p.Value)
+			}
+			return f, fmt.Errorf("env_file path %q: %w", p.Value, err)
 		}
 		info, err := os.Stat(real)
 		if err != nil {
@@ -87,6 +71,55 @@ func resolveStackEnvFiles(f source.StackFile, root string) (source.StackFile, er
 	}
 	f.Content = content
 	return f, nil
+}
+
+// resolvePathWithinRoot resolves symlinks in both the allowed root and
+// candidate, then checks containment using the resolved absolute paths.
+func resolvePathWithinRoot(candidate, root string) (string, error) {
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return "", fmt.Errorf("resolve allowed root: %w", err)
+	}
+	rootReal, err := filepath.EvalSymlinks(rootAbs)
+	if err != nil {
+		return "", fmt.Errorf("resolve allowed root %q: %w", root, err)
+	}
+	rootInfo, err := os.Stat(rootReal)
+	if err != nil {
+		return "", fmt.Errorf("inspect allowed root %q: %w", root, err)
+	}
+	if !rootInfo.IsDir() {
+		return "", fmt.Errorf("allowed root %q is not a directory", root)
+	}
+	candidateAbs, err := filepath.Abs(candidate)
+	if err != nil {
+		return "", fmt.Errorf("resolve path: %w", err)
+	}
+	real, err := filepath.EvalSymlinks(candidateAbs)
+	if err != nil {
+		return "", fmt.Errorf("cannot resolve %q: %w", candidate, err)
+	}
+	rel, err := filepath.Rel(rootReal, real)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("resolved path %q escapes allowed root %q", candidate, root)
+	}
+	return real, nil
+}
+
+func resolveUnderAllowedRoots(candidate string, roots []string) (string, error) {
+	real, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		return "", fmt.Errorf("bind mount source %q cannot be resolved: %w", candidate, err)
+	}
+	var rootErrors []string
+	for _, root := range roots {
+		resolved, err := resolvePathWithinRoot(real, root)
+		if err == nil {
+			return resolved, nil
+		}
+		rootErrors = append(rootErrors, err.Error())
+	}
+	return "", fmt.Errorf("bind mount source %q resolves to %q outside configured volume_bind_roots (%s)", candidate, real, strings.Join(rootErrors, "; "))
 }
 
 func mappingValue(n *yaml.Node, key string) *yaml.Node {

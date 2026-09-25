@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -137,9 +138,16 @@ func Parse(files []source.StackFile, allowedEnvVars []string, envFileRoots ...st
 	if len(envFileRoots) > 0 {
 		root = envFileRoots[0]
 	}
+	return ParseWithRoots(files, allowedEnvVars, root, nil)
+}
+
+// ParseWithRoots parses stack definitions using explicit host-side roots for
+// env_file and bind-mount sources. Empty roots keep those host references
+// disabled.
+func ParseWithRoots(files []source.StackFile, allowedEnvVars []string, envFileRoot string, bindRoots []string) (DesiredState, error) {
 	var resolveErrs []error
 	for i := range files {
-		resolved, err := resolveStackEnvFiles(files[i], root)
+		resolved, err := resolveStackEnvFiles(files[i], envFileRoot)
 		if err != nil {
 			resolveErrs = append(resolveErrs, fmt.Errorf("stack %q: %w", files[i].Name, err))
 			continue
@@ -171,7 +179,7 @@ func Parse(files []source.StackFile, allowedEnvVars []string, envFileRoots ...st
 	// a service they don't own.
 	owner := make(map[string]string)
 	for _, f := range files {
-		if err := parseStack(f, env, ds.Services, owner); err != nil {
+		if err := parseStack(f, env, ds.Services, owner, bindRoots); err != nil {
 			return DesiredState{}, fmt.Errorf("stack %q: %w", f.Name, err)
 		}
 	}
@@ -341,7 +349,7 @@ func checkServices(stack string, services *yaml.Node) []error {
 // form, to out. owner records the first stack to claim each qualified
 // name across the whole Parse call, so a collision with a different
 // stack fails the parse instead of silently overwriting that service.
-func parseStack(f source.StackFile, env types.Mapping, out map[string]ServiceSpec, owner map[string]string) error {
+func parseStack(f source.StackFile, env types.Mapping, out map[string]ServiceSpec, owner map[string]string, bindRoots []string) error {
 	details := types.ConfigDetails{
 		ConfigFiles: []types.ConfigFile{{Filename: f.Name + ".yaml", Content: f.Content}},
 		Environment: env,
@@ -362,7 +370,7 @@ func parseStack(f source.StackFile, env types.Mapping, out map[string]ServiceSpe
 		if err != nil {
 			return fmt.Errorf("service %q: %w", key, err)
 		}
-		volumes, err := serviceVolumes(s.Volumes)
+		volumes, err := serviceVolumes(s.Volumes, bindRoots)
 		if err != nil {
 			return fmt.Errorf("service %q: %w", key, err)
 		}
@@ -518,17 +526,36 @@ func serviceFileRefs(refs []rawFileRef, declared map[string]bool, kind string) (
 	return out, nil
 }
 
-// serviceVolumes converts named, local-driver volume mounts into normal
-// form, rejecting bind mounts, tmpfs, image mounts, and anything else
-// outside that shape.
-func serviceVolumes(in []types.ServiceVolumeConfig) ([]VolumeMount, error) {
+// serviceVolumes converts local-driver and explicitly allowlisted bind
+// mounts into normal form, rejecting tmpfs, image mounts, and other types.
+func serviceVolumes(in []types.ServiceVolumeConfig, bindRoots []string) ([]VolumeMount, error) {
 	if len(in) == 0 {
 		return nil, nil
 	}
 	out := make([]VolumeMount, 0, len(in))
 	for _, v := range in {
-		if v.Type != "volume" || v.Bind != nil || v.Tmpfs != nil || v.Image != nil {
+		if v.Tmpfs != nil || v.Image != nil {
 			return nil, fmt.Errorf("volume %q: only named local-driver volumes are supported", v.Target)
+		}
+		switch v.Type {
+		case "volume":
+			if v.Bind != nil {
+				return nil, fmt.Errorf("volume %q: malformed named volume", v.Target)
+			}
+		case "bind":
+			if !filepath.IsAbs(v.Source) {
+				return nil, fmt.Errorf("bind mount source %q must be an absolute path; relative paths have no meaning for in-memory Git stack files", v.Source)
+			}
+			if len(bindRoots) == 0 {
+				return nil, fmt.Errorf("bind mount source %q is not allowed: configure volume_bind_roots", v.Source)
+			}
+			resolved, err := resolveUnderAllowedRoots(v.Source, bindRoots)
+			if err != nil {
+				return nil, err
+			}
+			v.Source = resolved
+		default:
+			return nil, fmt.Errorf("volume %q: only named local-driver volumes and allowlisted bind mounts are supported", v.Target)
 		}
 		out = append(out, VolumeMount{Source: v.Source, Target: v.Target, ReadOnly: v.ReadOnly})
 	}

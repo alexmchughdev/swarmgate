@@ -122,6 +122,7 @@ git:
                                        # names every stack-file author is meant
                                        # to see the value of.
 env_file_root: "/datavol/env"         # optional host directory for service env_file paths
+volume_bind_roots: []                 # absolute host roots allowed for bind-mount sources
 poll_interval: "30s"                  # Go duration, default 30s
 events:
   wake: true                          # default true
@@ -144,11 +145,17 @@ stage_timeout: "30s"                  # default 30s; bounds each individual
                                        # remote can't hang the whole cycle
 ```
 
-Service `env_file` entries are resolved relative to `env_file_root` on the
+Relative service `env_file` entries are resolved under `env_file_root` on the
 swarmgate host (for example, `env_file: web.env` reads
-`/datavol/env/web.env`). The root is optional; stacks that use `env_file` are
-rejected with a configuration-specific error when it is unset. Resolved files
-must remain inside the configured root, including through symlinks.
+`/datavol/env/web.env`). Absolute entries are also accepted when they resolve
+inside that root. The root is optional; stacks that use `env_file` are rejected
+with a configuration-specific error when it is unset. Resolved files must
+remain inside the configured root, including through symlinks.
+
+Bind-mount volume sources are disabled unless `volume_bind_roots` lists one
+or more host directories. Sources must be absolute and resolve inside one of
+those roots. Unreferenced Swarm configs and secrets are retained after a
+service replacement; cleanup remains an operator-managed task.
 
 Every field also has a `SWARMGATE_*` environment override — see
 `internal/config/config.go`'s `envOverrides` table for the exact names.

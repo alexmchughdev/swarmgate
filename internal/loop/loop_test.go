@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -182,6 +183,61 @@ func TestCycleHappyPathEventOrder(t *testing.T) {
 	}
 	if applied := app.Applied(); len(applied) != 1 || applied[0].Action != apply.ActionCreate {
 		t.Fatalf("applied = %+v", applied)
+	}
+}
+
+func TestConfigAttachmentChangeRemovesAndRecreatesInOneCycle(t *testing.T) {
+	old := testSpec("web_app")
+	old.Configs = []spec.FileRef{{Source: "app_v1", Target: "/etc/app.conf"}}
+	old = spec.Normalize("web", old)
+	want := old
+	want.Configs = []spec.FileRef{{Source: "app_v2", Target: "/etc/app.conf"}}
+	want = spec.Normalize("web", want)
+
+	desired := spec.DesiredState{Services: map[string]spec.ServiceSpec{"web_app": old}}
+	src := &fakeSource{commit: source.Commit{SHA: "commit-one"}}
+	obs := &observe.FakeObserver{}
+	obs.Set(spec.ObservedState{Services: map[string]spec.ServiceSpec{}}, nil)
+	app := &apply.FakeApplier{}
+	rec := &captureRecorder{}
+	conv := &recordingConverger{}
+	deps := testDeps(src, desired, obs, app, rec)
+	deps.Converger = conv
+	if err := RunOnce(context.Background(), deps, testConfig(true)); err != nil {
+		t.Fatalf("initial RunOnce: %v", err)
+	}
+
+	clusterOld, ok := app.Current("web_app")
+	if !ok {
+		t.Fatal("initial service was not created")
+	}
+	obs.Set(spec.ObservedState{Services: map[string]spec.ServiceSpec{"web_app": clusterOld}}, nil)
+	desired = spec.DesiredState{Services: map[string]spec.ServiceSpec{"web_app": want}}
+	deps.Parse = func([]source.StackFile) (spec.DesiredState, error) { return desired, nil }
+	src.commit = source.Commit{SHA: "commit-two"}
+	if err := RunOnce(context.Background(), deps, testConfig(true)); err != nil {
+		t.Fatalf("attachment-change RunOnce: %v", err)
+	}
+
+	gotChanges := app.Applied()
+	if len(gotChanges) != 3 || gotChanges[0].Action != apply.ActionCreate || gotChanges[1].Action != apply.ActionRemove || gotChanges[2].Action != apply.ActionCreate {
+		t.Fatalf("applied changes = %+v, want create then remove/create", gotChanges)
+	}
+	current, ok := app.Current("web_app")
+	if !ok || !reflect.DeepEqual(current.Configs, want.Configs) {
+		t.Fatalf("current service = %+v, want recreated config refs %+v", current, want.Configs)
+	}
+	if len(conv.diffs) != 2 || len(conv.diffs[1].Removes) != 0 || len(conv.diffs[1].Creates) != 1 || !reflect.DeepEqual(conv.diffs[1].Creates[0].Configs, want.Configs) {
+		t.Fatalf("second convergence diff = %+v, want only final create", conv.diffs)
+	}
+	var applyEvents []telemetry.Event
+	for _, e := range rec.all() {
+		if e.Stage == telemetry.StageApply {
+			applyEvents = append(applyEvents, e)
+		}
+	}
+	if len(applyEvents) != 3 || applyEvents[1].Fields["action"] != "remove" || applyEvents[2].Fields["action"] != "create" {
+		t.Fatalf("apply events = %+v, want distinct remove and create events", applyEvents)
 	}
 }
 

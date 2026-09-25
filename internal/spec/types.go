@@ -116,7 +116,8 @@ type UlimitSpec struct {
 	Hard int64
 }
 
-// VolumeMount is one named, local-driver volume attachment.
+// VolumeMount is one named local volume or host bind attachment. Bind
+// sources are absolute canonical paths; named volume sources are names.
 type VolumeMount struct {
 	Source   string // the named volume
 	Target   string // mount path inside the container
