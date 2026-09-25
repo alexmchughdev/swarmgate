@@ -62,7 +62,7 @@ func runStatus(args []string) int {
 		fmt.Fprintln(os.Stderr, "swarmgate status: fetch source:", err)
 		return 1
 	}
-	desired, err := spec.Parse(files, cfg.Git.InterpolationVars, cfg.EnvFileRoot)
+	desired, err := spec.ParseWithBindAllowlist(files, cfg.Git.InterpolationVars, cfg.EnvFileRoot, cfg.VolumeBindRoots, bindMountAllowances(cfg.VolumeBindMounts))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "swarmgate status: parse:", err)
 		return 1

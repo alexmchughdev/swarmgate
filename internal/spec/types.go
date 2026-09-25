@@ -77,9 +77,8 @@ type ServiceSpec struct {
 	StopGracePeriod time.Duration
 	// Ulimits is sorted by Name for stable comparison.
 	Ulimits []UlimitSpec
-	// Volumes holds named, local-driver volume mounts only; sorted by
-	// Target. Bind mounts, tmpfs, and non-local drivers are outside the
-	// normal form and rejected at parse.
+	// Volumes holds named local-driver and explicitly allowlisted bind mounts,
+	// sorted by Target. Tmpfs and non-local drivers remain unsupported.
 	Volumes []VolumeMount
 	// Configs and Secrets reference cluster objects that must already
 	// exist (external only — swarmgate never creates or reads their
@@ -116,11 +115,12 @@ type UlimitSpec struct {
 	Hard int64
 }
 
-// VolumeMount is one named, local-driver volume attachment.
+// VolumeMount is one named local-driver or bind attachment.
 type VolumeMount struct {
-	Source   string // the named volume
+	Source   string // named volume or resolved host bind source
 	Target   string // mount path inside the container
 	ReadOnly bool
+	Bind     bool
 }
 
 // FileRef is a reference to an externally managed config or secret object,

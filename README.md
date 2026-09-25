@@ -122,6 +122,8 @@ git:
                                        # names every stack-file author is meant
                                        # to see the value of.
 env_file_root: "/datavol/env"         # optional host directory for service env_file paths
+volume_bind_roots: []                 # bind-source directories or exact file/socket paths
+volume_bind_mounts: []                # exact read-only bind source exceptions; use for source: /
 poll_interval: "30s"                  # Go duration, default 30s
 events:
   wake: true                          # default true
@@ -150,7 +152,9 @@ swarmgate host (for example, `env_file: web.env` reads
 rejected with a configuration-specific error when it is unset. Resolved files
 must remain inside the configured root, including through symlinks.
 
-Every field also has a `SWARMGATE_*` environment override — see
+Bind mounts are denied unless their source resolves beneath a `volume_bind_roots` directory or equals a configured exact file or socket entry. Symlinks are resolved before either comparison. `volume_bind_roots` cannot include `/`; to allow the host filesystem for a host-metrics service, configure an exact `volume_bind_mounts` entry with `source: /` and `read_only: true`. Exact entries are read-only by design and do not allow any other host path.
+
+Supported scalar fields also have a `SWARMGATE_*` environment override — see
 `internal/config/config.go`'s `envOverrides` table for the exact names.
 
 ## Supply-chain gate

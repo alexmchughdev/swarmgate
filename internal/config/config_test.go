@@ -297,3 +297,19 @@ func TestLoadExampleFile(t *testing.T) {
 		t.Error("example config has empty git.url")
 	}
 }
+
+func TestValidateVolumeBindMounts(t *testing.T) {
+	cfg := Config{Git: Git{URL: "https://example.test/stacks.git"}, PollInterval: time.Second, ConvergeTimeout: time.Second, StageTimeout: time.Second}
+	cfg.VolumeBindRoots = []string{"/"}
+	cfg.VolumeBindMounts = []VolumeBindMount{{Source: "/", ReadOnly: false}}
+	errs := cfg.validate()
+	joined := ""
+	for _, err := range errs {
+		joined += err.Error() + "\n"
+	}
+	for _, want := range []string{"volume_bind_roots must not contain /", "must set read_only: true"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("validate errors = %q, want %q", joined, want)
+		}
+	}
+}
