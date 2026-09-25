@@ -137,6 +137,16 @@ func Parse(files []source.StackFile, allowedEnvVars []string, envFileRoots ...st
 	if len(envFileRoots) > 0 {
 		root = envFileRoots[0]
 	}
+	return parse(files, allowedEnvVars, root, nil, nil)
+}
+
+// ParseWithBindAllowlist parses stack files while allowing bind mounts only
+// from configured directory/file roots or exact read-only mount entries.
+func ParseWithBindAllowlist(files []source.StackFile, allowedEnvVars []string, envFileRoot string, volumeBindRoots []string, exactBindMounts []BindMountAllowance) (DesiredState, error) {
+	return parse(files, allowedEnvVars, envFileRoot, volumeBindRoots, exactBindMounts)
+}
+
+func parse(files []source.StackFile, allowedEnvVars []string, root string, volumeBindRoots []string, exactBindMounts []BindMountAllowance) (DesiredState, error) {
 	var resolveErrs []error
 	for i := range files {
 		resolved, err := resolveStackEnvFiles(files[i], root)
@@ -171,7 +181,7 @@ func Parse(files []source.StackFile, allowedEnvVars []string, envFileRoots ...st
 	// a service they don't own.
 	owner := make(map[string]string)
 	for _, f := range files {
-		if err := parseStack(f, env, ds.Services, owner); err != nil {
+		if err := parseStack(f, env, ds.Services, owner, volumeBindRoots, exactBindMounts); err != nil {
 			return DesiredState{}, fmt.Errorf("stack %q: %w", f.Name, err)
 		}
 	}
@@ -341,7 +351,7 @@ func checkServices(stack string, services *yaml.Node) []error {
 // form, to out. owner records the first stack to claim each qualified
 // name across the whole Parse call, so a collision with a different
 // stack fails the parse instead of silently overwriting that service.
-func parseStack(f source.StackFile, env types.Mapping, out map[string]ServiceSpec, owner map[string]string) error {
+func parseStack(f source.StackFile, env types.Mapping, out map[string]ServiceSpec, owner map[string]string, volumeBindRoots []string, exactBindMounts []BindMountAllowance) error {
 	details := types.ConfigDetails{
 		ConfigFiles: []types.ConfigFile{{Filename: f.Name + ".yaml", Content: f.Content}},
 		Environment: env,
@@ -362,7 +372,7 @@ func parseStack(f source.StackFile, env types.Mapping, out map[string]ServiceSpe
 		if err != nil {
 			return fmt.Errorf("service %q: %w", key, err)
 		}
-		volumes, err := serviceVolumes(s.Volumes)
+		volumes, err := serviceVolumes(s.Volumes, volumeBindRoots, exactBindMounts)
 		if err != nil {
 			return fmt.Errorf("service %q: %w", key, err)
 		}
@@ -521,14 +531,28 @@ func serviceFileRefs(refs []rawFileRef, declared map[string]bool, kind string) (
 // serviceVolumes converts named, local-driver volume mounts into normal
 // form, rejecting bind mounts, tmpfs, image mounts, and anything else
 // outside that shape.
-func serviceVolumes(in []types.ServiceVolumeConfig) ([]VolumeMount, error) {
+func serviceVolumes(in []types.ServiceVolumeConfig, volumeBindRoots []string, exactBindMounts []BindMountAllowance) ([]VolumeMount, error) {
 	if len(in) == 0 {
 		return nil, nil
 	}
 	out := make([]VolumeMount, 0, len(in))
 	for _, v := range in {
+		if v.Type == "bind" && v.Bind != nil && v.Tmpfs == nil && v.Image == nil {
+			if real, allowed, err := resolveExactBindMount(v.Source, v.ReadOnly, exactBindMounts); err != nil {
+				return nil, err
+			} else if allowed {
+				out = append(out, VolumeMount{Source: real, Target: v.Target, ReadOnly: v.ReadOnly, Bind: true})
+				continue
+			}
+			real, err := resolvePathWithinRoot(v.Source, volumeBindRoots)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, VolumeMount{Source: real, Target: v.Target, ReadOnly: v.ReadOnly, Bind: true})
+			continue
+		}
 		if v.Type != "volume" || v.Bind != nil || v.Tmpfs != nil || v.Image != nil {
-			return nil, fmt.Errorf("volume %q: only named local-driver volumes are supported", v.Target)
+			return nil, fmt.Errorf("volume %q: only named local-driver volumes and allowlisted bind mounts are supported", v.Target)
 		}
 		out = append(out, VolumeMount{Source: v.Source, Target: v.Target, ReadOnly: v.ReadOnly})
 	}

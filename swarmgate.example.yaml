@@ -14,6 +14,8 @@ git:
                                        # names every stack-file author is meant
                                        # to see the value of.
 env_file_root: "/datavol/env"         # optional host directory for service env_file paths
+volume_bind_roots: []                 # allowed bind source directories or exact files/sockets
+volume_bind_mounts: []                # exact read-only bind mounts; use for source: /
 poll_interval: "30s"                  # Go duration, default 30s
 events:
   wake: true                          # default true
