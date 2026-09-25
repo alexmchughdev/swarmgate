@@ -160,7 +160,7 @@ func (g *CosignGate) verifyOne(ctx context.Context, c apply.Change) Verdict {
 // a generic predicate type. cosign's own CLI verify path takes the same
 // route for exactly this reason; VerifyImageSignatures with
 // CheckOpts.NewBundleFormat set is an explicit unimplemented stub in this
-// version. See docs/contentions.md.
+// version.
 func (g *CosignGate) verifySignature(ctx context.Context, ref name.Reference) error {
 	var errs []string
 	for i, co := range g.keyCheckOpts() {

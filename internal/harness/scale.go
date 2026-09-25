@@ -21,10 +21,10 @@ import (
 // for an SSH private key file to push with. Unset (the common case: every
 // scenario's clone is a local-path remote, which the ssh transport is
 // never invoked for regardless of this) preserves the original nil-auth
-// behavior exactly. Set it whenever a campaign's remote is an ssh:// URL —
+// behavior exactly. Set it whenever a run's remote is an ssh:// URL —
 // go-git's own push, unlike the git CLI, does not read GIT_SSH_COMMAND or
 // fall back to anything but an ssh-agent absent explicit auth, and a
-// harness process launched as a background campaign script has no agent.
+// harness process launched as a background script has no agent.
 const gitPushAuthKeyEnv = "SWARMGATE_HARNESS_SSH_KEY"
 
 // gitSSHUser returns the user@ portion of an ssh:// remote URL, defaulting
@@ -60,16 +60,16 @@ func gitPushAuth(repo *git.Repository) (transport.AuthMethod, error) {
 	return keys, nil
 }
 
-// t1Tags are the pinned nginx tags t1 cycles through when bumping a
-// service's image. Fixed and small so a campaign's image set stays within
+// scaleTags are the pinned nginx tags scale cycles through when bumping a
+// service's image. Fixed and small so a run's image set stays within
 // what's already cached locally/on the registry across runs.
-var t1Tags = []string{"1.24-alpine", "1.25-alpine", "1.26-alpine", "1.27-alpine", "1.28-alpine"}
+var scaleTags = []string{"1.24-alpine", "1.25-alpine", "1.26-alpine", "1.27-alpine", "1.28-alpine"}
 
 // imageRef prefixes name:tag with registry when set. A bare name:tag
 // implies Docker Hub to both the Docker engine and, critically, to
 // swarmgate's own resolve stage (a direct network call via
 // go-containerregistry, independent of the engine and any registry
-// mirror it might be configured with) — every resolve during a campaign
+// mirror it might be configured with) — every resolve during a run
 // would otherwise be a real WAN round trip to docker.io, contaminating
 // exactly the timing this harness exists to measure. Empty registry
 // preserves the original Docker Hub reference unchanged.
@@ -80,9 +80,8 @@ func imageRef(registry, name, tag string) string {
 	return registry + "/" + name + ":" + tag
 }
 
-// evalWorkloadHealthcheck matches swarmgate-eval-infra/workload/image's own
-// probe contract exactly (params.env: PROBE_INTERVAL=2 PROBE_TIMEOUT=2
-// PROBE_RETRIES=30, workload/compose/render.sh's healthcheck block): the
+// evalWorkloadHealthcheck matches the harness's workload image's own probe
+// contract exactly (PROBE_INTERVAL=2 PROBE_TIMEOUT=2 PROBE_RETRIES=30): the
 // image ships no shell, so the binary probes itself via `-healthcheck`.
 // This is not cosmetic — Swarm holds a task in "starting" (not "running")
 // until a defined healthcheck passes, so omitting this block would let
@@ -96,8 +95,8 @@ const evalWorkloadHealthcheck = "    healthcheck:\n" +
 	"      retries: 30\n" +
 	"      start_period: 0s\n"
 
-// T1Config configures one t1 convergence campaign.
-type T1Config struct {
+// ScaleConfig configures one scale convergence run.
+type ScaleConfig struct {
 	Repo    string // path to an existing working-tree clone
 	Stack   string // stack name; file is <Stack>.yaml at the repo root
 	Scale   int    // number of services in the stack
@@ -105,7 +104,7 @@ type T1Config struct {
 	Push    bool   // push after commit; false = commit only
 	// Registry, Image, and Tags together build each service's image
 	// reference (see imageRef); Image empty defaults to "nginx" and Tags
-	// empty defaults to t1Tags, preserving the original nginx-only
+	// empty defaults to scaleTags, preserving the original nginx-only
 	// behavior when neither is set.
 	Registry    string
 	Image       string
@@ -116,29 +115,29 @@ type T1Config struct {
 	Label       string // expected form "events=on" / "events=off"; folded verbatim into Condition
 }
 
-// t1Service is one rendered service entry.
-type t1Service struct {
+// scaleService is one rendered service entry.
+type scaleService struct {
 	Name        string
 	Image       string
 	Healthcheck bool
 }
 
-func t1ServiceName(i int) string {
+func scaleServiceName(i int) string {
 	return fmt.Sprintf("web%d", i+1)
 }
 
-// t1Plan derives this run's service set from the previous run's tag-cycle
+// scalePlan derives this run's service set from the previous run's tag-cycle
 // positions, advancing the first Changes services (by index) to the next
 // pinned tag and wrapping around. A nil or wrongly-sized tagIndex is
 // treated as a fresh stack, so the first-ever call needs no special case.
 // Pure and deterministic: no I/O, so template generation and tag cycling
 // are unit-testable without a repository or cluster.
-func t1Plan(scale, changes int, tagIndex []int, registry, image string, tags []string, healthcheck bool) (services []t1Service, nextTagIndex []int) {
+func scalePlan(scale, changes int, tagIndex []int, registry, image string, tags []string, healthcheck bool) (services []scaleService, nextTagIndex []int) {
 	if image == "" {
 		image = "nginx"
 	}
 	if len(tags) == 0 {
-		tags = t1Tags
+		tags = scaleTags
 	}
 	if len(tagIndex) != scale {
 		tagIndex = make([]int, scale)
@@ -147,15 +146,15 @@ func t1Plan(scale, changes int, tagIndex []int, registry, image string, tags []s
 	for i := 0; i < changes && i < scale; i++ {
 		next[i] = (next[i] + 1) % len(tags)
 	}
-	services = make([]t1Service, scale)
+	services = make([]scaleService, scale)
 	for i := 0; i < scale; i++ {
-		services[i] = t1Service{Name: t1ServiceName(i), Image: imageRef(registry, image, tags[next[i]]), Healthcheck: healthcheck}
+		services[i] = scaleService{Name: scaleServiceName(i), Image: imageRef(registry, image, tags[next[i]]), Healthcheck: healthcheck}
 	}
 	return services, next
 }
 
-// t1StackYAML renders services as a compose stack file.
-func t1StackYAML(services []t1Service) string {
+// scaleStackYAML renders services as a compose stack file.
+func scaleStackYAML(services []scaleService) string {
 	var b strings.Builder
 	b.WriteString("services:\n")
 	for _, s := range services {
@@ -167,35 +166,35 @@ func t1StackYAML(services []t1Service) string {
 	return b.String()
 }
 
-func t1Condition(cfg T1Config) string {
+func scaleCondition(cfg ScaleConfig) string {
 	return fmt.Sprintf("scale=%d;changes=%d;%s", cfg.Scale, cfg.Changes, cfg.Label)
 }
 
-// t1Runner carries cross-run state (each service's position in the tag
-// cycle) for one campaign. State lives only in the process: a killed and
+// scaleRunner carries cross-run state (each service's position in the tag
+// cycle) for one run. State lives only in the process: a killed and
 // restarted harness run resets every service to the first pinned tag
 // rather than reading it back from the repository.
-type t1Runner struct {
-	cfg      T1Config
+type scaleRunner struct {
+	cfg      ScaleConfig
 	tagIndex []int
 }
 
-func newT1Runner(cfg T1Config) *t1Runner {
-	return &t1Runner{cfg: cfg}
+func newScaleRunner(cfg ScaleConfig) *scaleRunner {
+	return &scaleRunner{cfg: cfg}
 }
 
-func (r *t1Runner) run(runIdx int) Row {
-	services, next := t1Plan(r.cfg.Scale, r.cfg.Changes, r.tagIndex, r.cfg.Registry, r.cfg.Image, r.cfg.Tags, r.cfg.Healthcheck)
+func (r *scaleRunner) run(runIdx int) Row {
+	services, next := scalePlan(r.cfg.Scale, r.cfg.Changes, r.tagIndex, r.cfg.Registry, r.cfg.Image, r.cfg.Tags, r.cfg.Healthcheck)
 	r.tagIndex = next
 
 	stackPath := filepath.Join(r.cfg.Repo, r.cfg.Stack+".yaml")
-	if err := os.WriteFile(stackPath, []byte(t1StackYAML(services)), 0o644); err != nil {
-		return t1ErrorRow(runIdx, r.cfg, fmt.Errorf("write stack file: %w", err))
+	if err := os.WriteFile(stackPath, []byte(scaleStackYAML(services)), 0o644); err != nil {
+		return scaleErrorRow(runIdx, r.cfg, fmt.Errorf("write stack file: %w", err))
 	}
 
-	sha, err := gitCommitAndPush(r.cfg.Repo, r.cfg.Stack+".yaml", fmt.Sprintf("t1 run %d", runIdx), r.cfg.Push)
+	sha, err := gitCommitAndPush(r.cfg.Repo, r.cfg.Stack+".yaml", fmt.Sprintf("scale run %d", runIdx), r.cfg.Push)
 	if err != nil {
-		return t1ErrorRow(runIdx, r.cfg, err)
+		return scaleErrorRow(runIdx, r.cfg, err)
 	}
 
 	tStart := time.Now()
@@ -211,26 +210,26 @@ func (r *t1Runner) run(runIdx int) Row {
 		tEnd = e.T
 	}
 	return Row{
-		Scenario: "t1", Condition: t1Condition(r.cfg), Run: runIdx,
+		Scenario: "scale", Condition: scaleCondition(r.cfg), Run: runIdx,
 		TStart: tStart, TEnd: tEnd, DurationMS: tEnd.Sub(tStart).Milliseconds(),
 		Outcome: outcome, Detail: detail,
 	}
 }
 
-func t1ErrorRow(runIdx int, cfg T1Config, err error) Row {
+func scaleErrorRow(runIdx int, cfg ScaleConfig, err error) Row {
 	now := time.Now()
 	return Row{
-		Scenario: "t1", Condition: t1Condition(cfg), Run: runIdx,
+		Scenario: "scale", Condition: scaleCondition(cfg), Run: runIdx,
 		TStart: now, TEnd: now, DurationMS: 0, Outcome: "error", Detail: err.Error(),
 	}
 }
 
-// RunT1 executes the t1 convergence campaign: n runs, each generating a
+// RunScale executes a scale convergence run: n iterations, each generating a
 // scale-service stack, bumping changes services' image tags, committing
 // (and optionally pushing), and measuring time to the matching converged
 // event.
-func RunT1(cfg T1Config, n int, out *CSVWriter) error {
-	r := newT1Runner(cfg)
+func RunScale(cfg ScaleConfig, n int, out *CSVWriter) error {
+	r := newScaleRunner(cfg)
 	return Run(out, n, r.run)
 }
 

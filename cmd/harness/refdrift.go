@@ -9,12 +9,12 @@ import (
 )
 
 func init() {
-	register(scenarioCmd{name: "t9", bind: bindT9, noEventsFile: true})
+	register(scenarioCmd{name: "refdrift", bind: bindRefdrift, noEventsFile: true})
 }
 
-func bindT9(fs *flag.FlagSet, sf *sharedFlags) func() error {
+func bindRefdrift(fs *flag.FlagSet, sf *sharedFlags) func() error {
 	repo := fs.String("repo", "", "path to an existing working-tree git clone of the repo ArgoCD watches (required)")
-	stack := fs.String("stack", "t8", "subdirectory under --repo holding the baseline manifest")
+	stack := fs.String("stack", "refconverge", "subdirectory under --repo holding the baseline manifest")
 	appName := fs.String("app-name", "", "ArgoCD Application resource name, already created and pointed at --stack (required)")
 	namespace := fs.String("namespace", "argocd", "namespace the ArgoCD Application resource lives in")
 	kubeconfig := fs.String("kubeconfig", "", "path to kubeconfig for kubectl calls; empty = kubectl's own default resolution")
@@ -23,7 +23,7 @@ func bindT9(fs *flag.FlagSet, sf *sharedFlags) func() error {
 	registry := fs.String("registry", "", "optional host[:port] prefix for image references; empty = Docker Hub, unprefixed")
 	image := fs.String("image", "", "image repository name; empty = nginx")
 	pollEvery := fs.Duration("poll-every", time.Second, "ArgoCD Application status poll interval")
-	triggerRefresh := fs.Bool("trigger-refresh", false, "annotate the Application for an immediate hard refresh after the baseline push (see T8Config.TriggerRefresh)")
+	triggerRefresh := fs.Bool("trigger-refresh", false, "annotate the Application for an immediate hard refresh after the baseline push (see RefconvergeConfig.TriggerRefresh)")
 	timeout := fs.Duration("timeout", 3*time.Minute, "per-phase (detect, repair) timeout")
 
 	return func() error {
@@ -36,7 +36,7 @@ func bindT9(fs *flag.FlagSet, sf *sharedFlags) func() error {
 		if *drift == "" {
 			return fmt.Errorf("--drift is required")
 		}
-		cfg := harness.T9Config{
+		cfg := harness.RefdriftConfig{
 			Repo: *repo, Stack: *stack, AppName: *appName, Namespace: *namespace, Kubeconfig: *kubeconfig,
 			Drift: *drift, Deployment: *deployment, Registry: *registry, Image: *image,
 			PollEvery: *pollEvery, TriggerRefresh: *triggerRefresh, Timeout: *timeout, Label: sf.label,
@@ -46,6 +46,6 @@ func bindT9(fs *flag.FlagSet, sf *sharedFlags) func() error {
 			return err
 		}
 		defer out.Close()
-		return harness.RunT9(cfg, sf.n, out)
+		return harness.RunRefdrift(cfg, sf.n, out)
 	}
 }

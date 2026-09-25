@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds, signs, and pushes the five swarmgate-test image variants consumed
-# by the t6 gate harness scenarios. Idempotent: re-running rebuilds the same
-# content and re-signs it against --registry.
+# by the harness verify scenario's gate tests. Idempotent: re-running rebuilds
+# the same content and re-signs it against --registry.
 #
 # Variants:
 #   ok-signed       signed with the pipeline key
@@ -58,10 +58,10 @@ for variant in "${VARIANTS[@]}"; do
   # otherwise attach unrelated metadata to every variant, including the
   # ones meant to carry none.
   #
-  # unsigned builds from distinct content (hello-unsigned.txt): the t6
-  # tag-repoint harness scenario retags a live tag onto this variant's
-  # digest specifically to prove it differs from ok-signed's, so the two
-  # must not collide the way an identical trivial COPY would produce.
+  # unsigned builds from distinct content (hello-unsigned.txt): the
+  # harness verify scenario's tag-repoint case retags a live tag onto this
+  # variant's digest specifically to prove it differs from ok-signed's, so
+  # the two must not collide the way an identical trivial COPY would produce.
   content_file=hello.txt
   if [[ "$variant" == unsigned ]]; then
     content_file=hello-unsigned.txt

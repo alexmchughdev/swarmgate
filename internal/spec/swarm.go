@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/swarm"
 )
 
@@ -48,6 +49,76 @@ func FromSwarm(s swarm.Service, networkNames map[string]string) ServiceSpec {
 				StartPeriod: hc.StartPeriod,
 			}
 		}
+
+		// Command/Entrypoint follow the Moby convention: ContainerSpec.Command
+		// is the entrypoint override, ContainerSpec.Args is the cmd override.
+		out.Entrypoint = cs.Command
+		out.Command = cs.Args
+		out.Hostname = cs.Hostname
+		out.User = cs.User
+		out.CapAdd = cs.CapabilityAdd
+		if cs.StopGracePeriod != nil {
+			out.StopGracePeriod = *cs.StopGracePeriod
+		}
+		for _, u := range cs.Ulimits {
+			out.Ulimits = append(out.Ulimits, UlimitSpec{Name: u.Name, Soft: u.Soft, Hard: u.Hard})
+		}
+		for _, m := range cs.Mounts {
+			if m.Type != mount.TypeVolume {
+				continue
+			}
+			out.Volumes = append(out.Volumes, VolumeMount{Source: m.Source, Target: m.Target, ReadOnly: m.ReadOnly})
+		}
+		for _, c := range cs.Configs {
+			target := ""
+			if c.File != nil {
+				target = c.File.Name
+			}
+			out.Configs = append(out.Configs, FileRef{Source: c.ConfigName, Target: target})
+		}
+		for _, sec := range cs.Secrets {
+			target := ""
+			if sec.File != nil {
+				target = sec.File.Name
+			}
+			out.Secrets = append(out.Secrets, FileRef{Source: sec.SecretName, Target: target})
+		}
+	}
+
+	switch {
+	case s.Spec.Mode.Replicated != nil:
+		out.Mode = "replicated"
+	case s.Spec.Mode.Global != nil:
+		out.Mode = "global"
+	case s.Spec.Mode.ReplicatedJob != nil:
+		out.Mode = "replicated-job"
+	case s.Spec.Mode.GlobalJob != nil:
+		out.Mode = "global-job"
+	}
+
+	if rp := s.Spec.TaskTemplate.RestartPolicy; rp != nil {
+		out.RestartPolicy = &RestartPolicySpec{Condition: string(rp.Condition)}
+		if rp.Delay != nil {
+			out.RestartPolicy.Delay = *rp.Delay
+		}
+		if rp.MaxAttempts != nil {
+			out.RestartPolicy.MaxAttempts = *rp.MaxAttempts
+		}
+		if rp.Window != nil {
+			out.RestartPolicy.Window = *rp.Window
+		}
+	}
+
+	if res := s.Spec.TaskTemplate.Resources; res != nil && res.Limits != nil {
+		out.Resources = &ResourcesSpec{MemoryBytes: res.Limits.MemoryBytes, NanoCPUs: res.Limits.NanoCPUs}
+	}
+
+	if pl := s.Spec.TaskTemplate.Placement; pl != nil && len(pl.Constraints) > 0 {
+		out.Placement = &PlacementSpec{Constraints: pl.Constraints}
+	}
+
+	if uc := s.Spec.UpdateConfig; uc != nil {
+		out.UpdateConfig = &UpdateConfigSpec{Parallelism: uc.Parallelism}
 	}
 
 	// Service labels, not container labels: the managed-label filter and
@@ -63,12 +134,12 @@ func FromSwarm(s swarm.Service, networkNames map[string]string) ServiceSpec {
 	}
 
 	if s.Spec.EndpointSpec != nil {
-		// PublishMode is intentionally dropped: FR4 does not model it.
 		for _, p := range s.Spec.EndpointSpec.Ports {
 			out.Ports = append(out.Ports, PortSpec{
 				Target:    p.TargetPort,
 				Published: p.PublishedPort,
 				Protocol:  string(p.Protocol),
+				Mode:      string(p.PublishMode),
 			})
 		}
 	}
@@ -107,13 +178,87 @@ func ToSwarm(s ServiceSpec) swarm.ServiceSpec {
 			StartPeriod: hc.StartPeriod,
 		}
 	}
+
+	// Command/Entrypoint follow the Moby convention: ContainerSpec.Command
+	// is the entrypoint override, ContainerSpec.Args is the cmd override —
+	// the mirror of FromSwarm's own mapping above.
+	cs.Command = s.Entrypoint
+	cs.Args = s.Command
+	cs.Hostname = s.Hostname
+	cs.User = s.User
+	cs.CapabilityAdd = s.CapAdd
+	if s.StopGracePeriod > 0 {
+		sgp := s.StopGracePeriod
+		cs.StopGracePeriod = &sgp
+	}
+	for _, u := range s.Ulimits {
+		cs.Ulimits = append(cs.Ulimits, &container.Ulimit{Name: u.Name, Soft: u.Soft, Hard: u.Hard})
+	}
+	for _, v := range s.Volumes {
+		cs.Mounts = append(cs.Mounts, mount.Mount{
+			Type: mount.TypeVolume, Source: v.Source, Target: v.Target, ReadOnly: v.ReadOnly,
+		})
+	}
+	// Configs/Secrets carry only the name here; ConfigID/SecretID are
+	// resolved and attached by the applier, which is the only side with a
+	// live connection to look external objects up by name (see
+	// apply.ensureConfigsAndSecrets).
+	for _, c := range s.Configs {
+		cs.Configs = append(cs.Configs, &swarm.ConfigReference{
+			ConfigName: c.Source,
+			File:       &swarm.ConfigReferenceFileTarget{Name: c.Target},
+		})
+	}
+	for _, sec := range s.Secrets {
+		cs.Secrets = append(cs.Secrets, &swarm.SecretReference{
+			SecretName: sec.Source,
+			File:       &swarm.SecretReferenceFileTarget{Name: sec.Target},
+		})
+	}
 	out.TaskTemplate.ContainerSpec = cs
 
-	// Copy before taking the address so the swarm spec never aliases the
-	// caller's field.
-	replicas := s.Replicas
-	out.Mode = swarm.ServiceMode{
-		Replicated: &swarm.ReplicatedService{Replicas: &replicas},
+	switch s.Mode {
+	case "global":
+		out.Mode = swarm.ServiceMode{Global: &swarm.GlobalService{}}
+	case "replicated-job":
+		out.Mode = swarm.ServiceMode{ReplicatedJob: &swarm.ReplicatedJob{}}
+	case "global-job":
+		out.Mode = swarm.ServiceMode{GlobalJob: &swarm.GlobalJob{}}
+	default:
+		// Copy before taking the address so the swarm spec never aliases
+		// the caller's field.
+		replicas := s.Replicas
+		out.Mode = swarm.ServiceMode{Replicated: &swarm.ReplicatedService{Replicas: &replicas}}
+	}
+
+	if rp := s.RestartPolicy; rp != nil {
+		out.TaskTemplate.RestartPolicy = &swarm.RestartPolicy{
+			Condition: swarm.RestartPolicyCondition(rp.Condition),
+		}
+		if rp.Delay > 0 {
+			out.TaskTemplate.RestartPolicy.Delay = &rp.Delay
+		}
+		if rp.MaxAttempts > 0 {
+			ma := rp.MaxAttempts
+			out.TaskTemplate.RestartPolicy.MaxAttempts = &ma
+		}
+		if rp.Window > 0 {
+			out.TaskTemplate.RestartPolicy.Window = &rp.Window
+		}
+	}
+
+	if res := s.Resources; res != nil {
+		out.TaskTemplate.Resources = &swarm.ResourceRequirements{
+			Limits: &swarm.Limit{MemoryBytes: res.MemoryBytes, NanoCPUs: res.NanoCPUs},
+		}
+	}
+
+	if pl := s.Placement; pl != nil {
+		out.TaskTemplate.Placement = &swarm.Placement{Constraints: pl.Constraints}
+	}
+
+	if uc := s.UpdateConfig; uc != nil {
+		out.UpdateConfig = &swarm.UpdateConfig{Parallelism: uc.Parallelism}
 	}
 
 	// Normal form is sorted, so slice order here is already deterministic.
@@ -125,12 +270,11 @@ func ToSwarm(s ServiceSpec) swarm.ServiceSpec {
 	if len(s.Ports) > 0 {
 		ep := &swarm.EndpointSpec{}
 		for _, p := range s.Ports {
-			// PublishMode is left at the engine default: FR4 does
-			// not model it.
 			ep.Ports = append(ep.Ports, swarm.PortConfig{
 				Protocol:      swarm.PortConfigProtocol(p.Protocol),
 				TargetPort:    p.Target,
 				PublishedPort: p.Published,
+				PublishMode:   swarm.PortConfigPublishMode(p.Mode),
 			})
 		}
 		out.EndpointSpec = ep

@@ -1,14 +1,12 @@
 services:
   web:
     image: nginx:1.27
-    volumes:
-      - /data:/data
+    working_dir: /app
     depends_on:
       - db
     deploy:
       replicas: 1
-      resources:
-        limits:
-          cpus: "0.5"
+      rollback_config:
+        parallelism: 1
   db:
     image: postgres:16

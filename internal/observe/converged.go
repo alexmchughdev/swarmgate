@@ -172,7 +172,6 @@ func (o *SwarmObserver) checkTarget(ctx context.Context, t awaitTarget, netNames
 	// task-level health status, but the Swarm API exposes no health field on
 	// TaskStatus. The engine keeps a healthchecked task in "starting" until
 	// its healthcheck passes, so any task counted by clause (c) has already
-	// passed its healthcheck; clause (d) is folded into (c). Recorded in
-	// docs/deviations.md.
+	// passed its healthcheck; clause (d) is folded into (c).
 	return "", true
 }

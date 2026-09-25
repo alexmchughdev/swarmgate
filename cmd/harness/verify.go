@@ -9,15 +9,15 @@ import (
 )
 
 func init() {
-	register(scenarioCmd{name: "t6", bind: bindT6})
+	register(scenarioCmd{name: "verify", bind: bindVerify})
 }
 
-func bindT6(fs *flag.FlagSet, sf *sharedFlags) func() error {
+func bindVerify(fs *flag.FlagSet, sf *sharedFlags) func() error {
 	caseFlag := fs.String("case", "", "gate case: unsigned|wrong-identity|no-attestation|ok|tag-repoint (required)")
 	mode := fs.String("mode", "", "gate.mode the swarmgate instance under test is configured with; recorded in Condition only")
 	registry := fs.String("registry", "", "registry host:port pipeline/build.sh pushed the fixture images to (required)")
 	repo := fs.String("repo", "", "path to an existing working-tree git clone the harness commits to (required)")
-	stack := fs.String("stack", "t6", "stack name; file is <stack>.yaml at the repo root")
+	stack := fs.String("stack", "verify", "stack name; file is <stack>.yaml at the repo root")
 	service := fs.String("service", "web1", "base service name; each run appends its own index")
 	dockerHost := fs.String("docker-host", "", "docker engine host; only the tag-repoint case's post-hoc inspect needs it")
 	push := fs.Bool("push", true, "push after commit; false = commit only, for local-remote setups")
@@ -30,10 +30,10 @@ func bindT6(fs *flag.FlagSet, sf *sharedFlags) func() error {
 		if *registry == "" {
 			return fmt.Errorf("--registry is required")
 		}
-		if !isValidT6Case(*caseFlag) {
-			return fmt.Errorf("--case must be one of %v, got %q", harness.T6Cases, *caseFlag)
+		if !isValidVerifyCase(*caseFlag) {
+			return fmt.Errorf("--case must be one of %v, got %q", harness.VerifyCases, *caseFlag)
 		}
-		cfg := harness.T6Config{
+		cfg := harness.VerifyConfig{
 			Repo: *repo, Stack: *stack, Service: *service, Registry: *registry,
 			Case: *caseFlag, Mode: *mode, DockerHost: *dockerHost,
 			Push: *push, EventsFile: sf.eventsFile, Timeout: *timeout, Label: sf.label,
@@ -43,12 +43,12 @@ func bindT6(fs *flag.FlagSet, sf *sharedFlags) func() error {
 			return err
 		}
 		defer out.Close()
-		return harness.RunT6(cfg, sf.n, out)
+		return harness.RunVerify(cfg, sf.n, out)
 	}
 }
 
-func isValidT6Case(c string) bool {
-	for _, v := range harness.T6Cases {
+func isValidVerifyCase(c string) bool {
+	for _, v := range harness.VerifyCases {
 		if c == v {
 			return true
 		}

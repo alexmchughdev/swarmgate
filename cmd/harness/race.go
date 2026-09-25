@@ -10,14 +10,14 @@ import (
 )
 
 func init() {
-	register(scenarioCmd{name: "t4", bind: bindT4})
+	register(scenarioCmd{name: "race", bind: bindRace})
 }
 
-func bindT4(fs *flag.FlagSet, sf *sharedFlags) func() error {
+func bindRace(fs *flag.FlagSet, sf *sharedFlags) func() error {
 	offset := fs.String("offset", "", "race trigger offset: diff|window|apply|after (required)")
 	service := fs.String("service", "", "compose service key within the stack to race, e.g. \"web1\" (required; not stack-qualified — the harness qualifies it internally)")
 	repo := fs.String("repo", "", "path to an existing working-tree git clone the harness commits to (required)")
-	stack := fs.String("stack", "t4", "stack name; file is <stack>.yaml at the repo root")
+	stack := fs.String("stack", "race", "stack name; file is <stack>.yaml at the repo root")
 	dockerHost := fs.String("docker-host", "", "docker engine host for the operator mutation and verification inspect")
 	timeout := fs.Duration("timeout", 3*time.Minute, "per-run deadline for reaching a settled state (converged or timeout)")
 	registry := fs.String("registry", "", "optional host[:port] prefix for image references; empty = Docker Hub, unprefixed")
@@ -31,14 +31,14 @@ func bindT4(fs *flag.FlagSet, sf *sharedFlags) func() error {
 		if *service == "" {
 			return fmt.Errorf("--service is required")
 		}
-		if !isValidT4Offset(*offset) {
-			return fmt.Errorf("--offset must be one of %v, got %q", harness.T4Offsets, *offset)
+		if !isValidRaceOffset(*offset) {
+			return fmt.Errorf("--offset must be one of %v, got %q", harness.RaceOffsets, *offset)
 		}
 		var tagList []string
 		if *tags != "" {
 			tagList = strings.Split(*tags, ",")
 		}
-		cfg := harness.T4Config{
+		cfg := harness.RaceConfig{
 			Repo: *repo, Stack: *stack, Service: *service, Offset: *offset,
 			DockerHost: *dockerHost, EventsFile: sf.eventsFile, Timeout: *timeout, Label: sf.label,
 			Registry: *registry, Image: *image, Tags: tagList,
@@ -48,12 +48,12 @@ func bindT4(fs *flag.FlagSet, sf *sharedFlags) func() error {
 			return err
 		}
 		defer out.Close()
-		return harness.RunT4(cfg, sf.n, out)
+		return harness.RunRace(cfg, sf.n, out)
 	}
 }
 
-func isValidT4Offset(offset string) bool {
-	for _, o := range harness.T4Offsets {
+func isValidRaceOffset(offset string) bool {
+	for _, o := range harness.RaceOffsets {
 		if offset == o {
 			return true
 		}

@@ -38,7 +38,7 @@ def load(path: str) -> pd.DataFrame:
     missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
     if missing:
         raise SystemExit(f"results csv is missing required column(s): {', '.join(missing)}")
-    # detail is legitimately empty for t1 rows; keep it a string rather than
+    # detail is legitimately empty for scale rows; keep it a string rather than
     # letting pandas turn a blank column into NaN, which would fracture
     # group keys between "" and NaN.
     df["detail"] = df["detail"].fillna("")
@@ -119,7 +119,7 @@ def emit_markdown(summary: pd.DataFrame, df: pd.DataFrame, by: list[str]) -> Non
         if sc.empty:
             continue
 
-        if scenario == "t1" and "condition" in by:
+        if scenario == "scale" and "condition" in by:
             sc = sc.sort_values("condition")
             display = pd.DataFrame({
                 "condition": sc["condition"],
@@ -133,7 +133,7 @@ def emit_markdown(summary: pd.DataFrame, df: pd.DataFrame, by: list[str]) -> Non
             })
             headers = ["condition", "n", "median (ms)", "p95 (ms)", "min (ms)", "max (ms)", "timeout", "error"]
             table = render_markdown_table(display, headers, headers)
-        elif scenario == "t2" and "condition" in by and "detail" in by:
+        elif scenario == "drift" and "condition" in by and "detail" in by:
             sc = sc.sort_values(["condition", "detail"])
             display = pd.DataFrame({
                 "condition": sc["condition"],

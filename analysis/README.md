@@ -31,13 +31,14 @@ to `markdown` if omitted.
 Markdown output prints one `#### <scenario>` heading and table per scenario
 present in the input:
 
-- `t1`: one row per `condition` (columns: condition, n, median (ms),
+- `scale`: one row per `condition` (columns: condition, n, median (ms),
   p95 (ms), min (ms), max (ms), timeout, error).
-- `t2`: one row per `condition, detail` pair, since `detail` (detect/repair)
-  is a meaningful sub-grouping for t2 (same columns as t1 plus `detail`).
-- any other scenario present in the data (t3-t6): a generic fallback table
-  using whatever `--by` grouping was requested, so the tool never crashes
-  or drops data for a scenario without a hard-coded shape.
+- `drift`: one row per `condition, detail` pair, since `detail` (detect/repair)
+  is a meaningful sub-grouping for drift (same columns as scale plus `detail`).
+- any other scenario present in the data (fault, race, latency, verify,
+  refconverge, refdrift): a generic fallback table using whatever `--by`
+  grouping was requested, so the tool never crashes or drops data for a
+  scenario without a hard-coded shape.
 
 Markdown output requires `scenario` to be one of the `--by` columns (the
 default satisfies this); the tool needs it to know which heading/table
@@ -47,8 +48,8 @@ CSV output (`--emit csv`) prints the raw group-level summary — the `--by`
 key columns plus `n,median,p95,min,max,timeout,error` — as CSV to stdout.
 
 Note: no companion table-shape spec document exists for this project; the
-T1/T2 markdown layouts above were designed from the CSV schema and the
-stated requirements, not matched against an external spec.
+scale/drift markdown layouts above were designed from the CSV schema and
+the stated requirements, not matched against an external spec.
 
 ## Tests
 

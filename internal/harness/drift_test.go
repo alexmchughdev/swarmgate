@@ -9,27 +9,27 @@ import (
 	"github.com/alexmchughdev/swarmgate/internal/telemetry"
 )
 
-func TestT2ConditionReplicas(t *testing.T) {
-	cfg := T2Config{Drift: "replicas", Service: "web_nginx", Label: "events=on"}
-	if got, want := t2Condition(cfg), "drift=replicas;service=web_nginx;events=on"; got != want {
-		t.Fatalf("t2Condition = %q, want %q", got, want)
+func TestDriftConditionReplicas(t *testing.T) {
+	cfg := DriftConfig{Drift: "replicas", Service: "web_nginx", Label: "events=on"}
+	if got, want := driftCondition(cfg), "drift=replicas;service=web_nginx;events=on"; got != want {
+		t.Fatalf("driftCondition = %q, want %q", got, want)
 	}
 }
 
-func TestT2ConditionUnmanaged(t *testing.T) {
-	cfg := T2Config{Drift: "unmanaged", Service: "decoy", Label: "events=off"}
-	if got, want := t2Condition(cfg), "drift=unmanaged;service=decoy;events=off"; got != want {
-		t.Fatalf("t2Condition = %q, want %q", got, want)
+func TestDriftConditionUnmanaged(t *testing.T) {
+	cfg := DriftConfig{Drift: "unmanaged", Service: "decoy", Label: "events=off"}
+	if got, want := driftCondition(cfg), "drift=unmanaged;service=decoy;events=off"; got != want {
+		t.Fatalf("driftCondition = %q, want %q", got, want)
 	}
 }
 
-func TestT2RollbackImageIsFirstPinnedTag(t *testing.T) {
-	if got, want := t2RollbackImage(""), "nginx:1.24-alpine"; got != want {
-		t.Fatalf("t2RollbackImage = %q, want %q", got, want)
+func TestDriftRollbackImageIsFirstPinnedTag(t *testing.T) {
+	if got, want := driftRollbackImage(""), "nginx:1.24-alpine"; got != want {
+		t.Fatalf("driftRollbackImage = %q, want %q", got, want)
 	}
 }
 
-func TestT2DecoyName(t *testing.T) {
+func TestDriftDecoyName(t *testing.T) {
 	cases := []struct {
 		service string
 		run     int
@@ -39,38 +39,38 @@ func TestT2DecoyName(t *testing.T) {
 		{"api_svc", 42, "api_svc-42"},
 	}
 	for _, c := range cases {
-		if got := t2DecoyName(c.service, c.run); got != c.want {
-			t.Fatalf("t2DecoyName(%q, %d) = %q, want %q", c.service, c.run, got, c.want)
+		if got := driftDecoyName(c.service, c.run); got != c.want {
+			t.Fatalf("driftDecoyName(%q, %d) = %q, want %q", c.service, c.run, got, c.want)
 		}
 	}
 }
 
-func TestT2SetEnvAppendsWhenAbsent(t *testing.T) {
-	got := t2SetEnv([]string{"FOO=bar"}, "DRIFT", "3")
+func TestDriftSetEnvAppendsWhenAbsent(t *testing.T) {
+	got := driftSetEnv([]string{"FOO=bar"}, "DRIFT", "3")
 	want := []string{"FOO=bar", "DRIFT=3"}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("t2SetEnv = %v, want %v", got, want)
+		t.Fatalf("driftSetEnv = %v, want %v", got, want)
 	}
 }
 
-func TestT2SetEnvReplacesWhenPresent(t *testing.T) {
-	got := t2SetEnv([]string{"FOO=bar", "DRIFT=1"}, "DRIFT", "2")
+func TestDriftSetEnvReplacesWhenPresent(t *testing.T) {
+	got := driftSetEnv([]string{"FOO=bar", "DRIFT=1"}, "DRIFT", "2")
 	want := []string{"FOO=bar", "DRIFT=2"}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("t2SetEnv = %v, want %v", got, want)
+		t.Fatalf("driftSetEnv = %v, want %v", got, want)
 	}
 }
 
-func TestT2SetEnvOnNilEnv(t *testing.T) {
-	got := t2SetEnv(nil, "DRIFT", "1")
+func TestDriftSetEnvOnNilEnv(t *testing.T) {
+	got := driftSetEnv(nil, "DRIFT", "1")
 	want := []string{"DRIFT=1"}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("t2SetEnv = %v, want %v", got, want)
+		t.Fatalf("driftSetEnv = %v, want %v", got, want)
 	}
 }
 
-func TestT2DriftMatch(t *testing.T) {
-	match := t2DriftMatch("replicas", "web_nginx")
+func TestDriftDriftMatch(t *testing.T) {
+	match := driftDriftMatch("replicas", "web_nginx")
 
 	hit := telemetry.Event{
 		Stage:  telemetry.StageDrift,
@@ -105,92 +105,92 @@ func TestT2DriftMatch(t *testing.T) {
 	}
 }
 
-func TestT2AwaitRepairMatchesConvergedForApplyingCycle(t *testing.T) {
+func TestDriftAwaitRepairMatchesConvergedForApplyingCycle(t *testing.T) {
 	events := make(chan telemetry.Event, 4)
 	events <- telemetry.Event{Stage: telemetry.StageConverged, RunID: "unrelated-earlier-cycle"}
 	events <- telemetry.Event{Stage: telemetry.StageApply, Service: "other_svc", RunID: "run-a"}
 	events <- telemetry.Event{Stage: telemetry.StageApply, Service: "web_nginx", RunID: "run-b"}
 	events <- telemetry.Event{Stage: telemetry.StageConverged, RunID: "run-b"}
 
-	got, err := t2AwaitRepair(context.Background(), events, "web_nginx")
+	got, err := driftAwaitRepair(context.Background(), events, "web_nginx")
 	if err != nil {
-		t.Fatalf("t2AwaitRepair: %v", err)
+		t.Fatalf("driftAwaitRepair: %v", err)
 	}
 	if got.RunID != "run-b" {
 		t.Fatalf("matched converged run_id = %q, want run-b", got.RunID)
 	}
 }
 
-// TestT2AwaitRepairIgnoresConvergedFromCycleThatAppliedNothing is a
+// TestDriftAwaitRepairIgnoresConvergedFromCycleThatAppliedNothing is a
 // regression test: a converged event from a cycle that never touched the
 // target service must not satisfy the repair wait.
-func TestT2AwaitRepairIgnoresConvergedFromCycleThatAppliedNothing(t *testing.T) {
+func TestDriftAwaitRepairIgnoresConvergedFromCycleThatAppliedNothing(t *testing.T) {
 	events := make(chan telemetry.Event, 3)
 	events <- telemetry.Event{Stage: telemetry.StageConverged, RunID: "no-op-cycle"}
 	events <- telemetry.Event{Stage: telemetry.StageApply, Service: "web_nginx", RunID: "run-b"}
 	events <- telemetry.Event{Stage: telemetry.StageConverged, RunID: "run-b"}
 
-	got, err := t2AwaitRepair(context.Background(), events, "web_nginx")
+	got, err := driftAwaitRepair(context.Background(), events, "web_nginx")
 	if err != nil {
-		t.Fatalf("t2AwaitRepair: %v", err)
+		t.Fatalf("driftAwaitRepair: %v", err)
 	}
 	if got.RunID != "run-b" {
 		t.Fatalf("matched converged run_id = %q, want run-b (not the no-op cycle)", got.RunID)
 	}
 }
 
-// TestT2AwaitRepairTracksMostRecentApply is a regression test for retries:
+// TestDriftAwaitRepairTracksMostRecentApply is a regression test for retries:
 // only the most recent apply's run_id may satisfy the repair wait.
-func TestT2AwaitRepairTracksMostRecentApply(t *testing.T) {
+func TestDriftAwaitRepairTracksMostRecentApply(t *testing.T) {
 	events := make(chan telemetry.Event, 4)
 	events <- telemetry.Event{Stage: telemetry.StageApply, Service: "web_nginx", RunID: "run-a"}
 	events <- telemetry.Event{Stage: telemetry.StageApply, Service: "web_nginx", RunID: "run-b"}
 	events <- telemetry.Event{Stage: telemetry.StageConverged, RunID: "run-a"}
 	events <- telemetry.Event{Stage: telemetry.StageConverged, RunID: "run-b"}
 
-	got, err := t2AwaitRepair(context.Background(), events, "web_nginx")
+	got, err := driftAwaitRepair(context.Background(), events, "web_nginx")
 	if err != nil {
-		t.Fatalf("t2AwaitRepair: %v", err)
+		t.Fatalf("driftAwaitRepair: %v", err)
 	}
 	if got.RunID != "run-b" {
 		t.Fatalf("matched converged run_id = %q, want run-b (the most recent apply)", got.RunID)
 	}
 }
 
-func TestT2AwaitRepairTimesOutOnContext(t *testing.T) {
+func TestDriftAwaitRepairTimesOutOnContext(t *testing.T) {
 	events := make(chan telemetry.Event)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 
-	_, err := t2AwaitRepair(ctx, events, "web_nginx")
+	_, err := driftAwaitRepair(ctx, events, "web_nginx")
 	if err == nil {
 		t.Fatal("expected error on context deadline")
 	}
 }
 
-func TestT2RowOkOnMatch(t *testing.T) {
-	cfg := T2Config{Drift: "env", Service: "web_nginx"}
+func TestDriftRowOkOnMatch(t *testing.T) {
+	cfg := DriftConfig{Drift: "env", Service: "web_nginx"}
 	start := time.Now()
 	end := start.Add(2 * time.Second)
-	row := t2Row(cfg, 1, "detect", start, end, nil)
+	row := driftRow(cfg, 1, "detect", start, end, nil)
 	if row.Outcome != "ok" || row.Detail != "detect" {
 		t.Fatalf("row = %+v, want outcome=ok detail=detect", row)
 	}
 }
 
-func TestT2RowTimeoutOnDeadlineExceeded(t *testing.T) {
-	cfg := T2Config{Drift: "env", Service: "web_nginx"}
+func TestDriftRowTimeoutOnDeadlineExceeded(t *testing.T) {
+	cfg := DriftConfig{Drift: "env", Service: "web_nginx"}
 	start := time.Now()
-	row := t2Row(cfg, 1, "repair", start, start, context.DeadlineExceeded)
+	row := driftRow(cfg, 1, "repair", start, start, context.DeadlineExceeded)
 	if row.Outcome != "timeout" || row.Detail != "repair" {
 		t.Fatalf("row = %+v, want outcome=timeout detail=repair", row)
 	}
 }
 
-func TestT2RowErrorOnOtherFailure(t *testing.T) {
-	cfg := T2Config{Drift: "env", Service: "web_nginx"}
+func TestDriftRowErrorOnOtherFailure(t *testing.T) {
+	cfg := DriftConfig{Drift: "env", Service: "web_nginx"}
 	start := time.Now()
-	row := t2Row(cfg, 1, "detect", start, start, context.Canceled)
+	row := driftRow(cfg, 1, "detect", start, start, context.Canceled)
 	if row.Outcome != "error" {
 		t.Fatalf("row.Outcome = %q, want error", row.Outcome)
 	}

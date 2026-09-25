@@ -57,6 +57,12 @@ func Normalize(stack string, s ServiceSpec) ServiceSpec {
 	if len(s.Ports) == 0 {
 		s.Ports = nil
 	}
+	if len(s.Command) == 0 {
+		s.Command = nil
+	}
+	if len(s.Entrypoint) == 0 {
+		s.Entrypoint = nil
+	}
 
 	// Rule (image): the image reference is stored as given. Digest pinning
 	// happens in the resolve stage, after which Image is repo@sha256:...;
@@ -97,9 +103,11 @@ func Normalize(stack string, s ServiceSpec) ServiceSpec {
 		s.Healthcheck = nil
 	}
 
-	// Rule (ports): protocol lowercased with tcp as the default, then
-	// sorted by (Target, Published, Protocol) so publication order never
-	// diffs.
+	// Rule (ports): protocol lowercased with tcp as the default, publish
+	// mode defaulted to ingress (the engine's own default) so it is always
+	// explicit rather than an empty string that would diff against
+	// whatever the observed side reads back, then sorted by (Target,
+	// Published, Protocol) so publication order never diffs.
 	if len(s.Ports) > 0 {
 		ports := slices.Clone(s.Ports)
 		for i := range ports {
@@ -108,12 +116,82 @@ func Normalize(stack string, s ServiceSpec) ServiceSpec {
 			} else {
 				ports[i].Protocol = strings.ToLower(ports[i].Protocol)
 			}
+			if ports[i].Mode == "" {
+				ports[i].Mode = "ingress"
+			}
 		}
 		slices.SortFunc(ports, comparePorts)
 		s.Ports = ports
 	}
 
+	// Rule (cap_add): sorted, deduplicated so attachment order never diffs.
+	if len(s.CapAdd) == 0 {
+		s.CapAdd = nil
+	} else {
+		caps := slices.Clone(s.CapAdd)
+		slices.Sort(caps)
+		s.CapAdd = slices.Compact(caps)
+	}
+
+	// Rule (ulimits): sorted by Name so declaration order never diffs.
+	if len(s.Ulimits) == 0 {
+		s.Ulimits = nil
+	} else {
+		ulimits := slices.Clone(s.Ulimits)
+		slices.SortFunc(ulimits, func(a, b UlimitSpec) int { return strings.Compare(a.Name, b.Name) })
+		s.Ulimits = ulimits
+	}
+
+	// Rule (volumes/configs/secrets): sorted by Target so declaration
+	// order never diffs.
+	if len(s.Volumes) == 0 {
+		s.Volumes = nil
+	} else {
+		vols := slices.Clone(s.Volumes)
+		slices.SortFunc(vols, func(a, b VolumeMount) int { return strings.Compare(a.Target, b.Target) })
+		s.Volumes = vols
+	}
+	s.Configs = normalizeFileRefs(s.Configs)
+	s.Secrets = normalizeFileRefs(s.Secrets)
+
+	// Rule (mode): defaults to replicated, matching the compose-spec and
+	// engine default, so it is always explicit on both sides of the diff.
+	if s.Mode == "" {
+		s.Mode = "replicated"
+	}
+
+	// Rule (restart_policy): a present policy with no explicit condition
+	// defaults to "any", the engine's own default.
+	if s.RestartPolicy != nil && s.RestartPolicy.Condition == "" {
+		rp := *s.RestartPolicy
+		rp.Condition = "any"
+		s.RestartPolicy = &rp
+	}
+
+	// Rule (placement): constraints sorted and deduplicated so declaration
+	// order never diffs.
+	if s.Placement != nil {
+		p := *s.Placement
+		if len(p.Constraints) == 0 {
+			p.Constraints = nil
+		} else {
+			c := slices.Clone(p.Constraints)
+			slices.Sort(c)
+			p.Constraints = slices.Compact(c)
+		}
+		s.Placement = &p
+	}
+
 	return s
+}
+
+func normalizeFileRefs(refs []FileRef) []FileRef {
+	if len(refs) == 0 {
+		return nil
+	}
+	out := slices.Clone(refs)
+	slices.SortFunc(out, func(a, b FileRef) int { return strings.Compare(a.Target, b.Target) })
+	return out
 }
 
 func comparePorts(a, b PortSpec) int {

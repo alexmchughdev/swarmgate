@@ -6,16 +6,16 @@ import (
 	"github.com/alexmchughdev/swarmgate/internal/telemetry"
 )
 
-func TestT4Condition(t *testing.T) {
-	cfg := T4Config{Offset: "apply", Service: "web_nginx", Label: "events=on"}
-	got := t4Condition(cfg)
+func TestRaceCondition(t *testing.T) {
+	cfg := RaceConfig{Offset: "apply", Service: "web_nginx", Label: "events=on"}
+	got := raceCondition(cfg)
 	want := "offset=apply;service=web_nginx;events=on"
 	if got != want {
-		t.Fatalf("t4Condition = %q, want %q", got, want)
+		t.Fatalf("raceCondition = %q, want %q", got, want)
 	}
 }
 
-func TestT4ShouldFireOnEvent(t *testing.T) {
+func TestRaceShouldFireOnEvent(t *testing.T) {
 	const service = "web_nginx"
 
 	diffEvent := telemetry.Event{Stage: telemetry.StageDiff}
@@ -56,15 +56,15 @@ func TestT4ShouldFireOnEvent(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := t4ShouldFireOnEvent(tt.offset, tt.event, service)
+		got := raceShouldFireOnEvent(tt.offset, tt.event, service)
 		if got != tt.want {
-			t.Errorf("t4ShouldFireOnEvent(%q, stage=%s service=%s) = %v, want %v",
+			t.Errorf("raceShouldFireOnEvent(%q, stage=%s service=%s) = %v, want %v",
 				tt.offset, tt.event.Stage, tt.event.Service, got, tt.want)
 		}
 	}
 }
 
-func TestT4DetailComposition(t *testing.T) {
+func TestRaceDetailComposition(t *testing.T) {
 	tests := []struct {
 		name      string
 		winner    string
@@ -106,9 +106,9 @@ func TestT4DetailComposition(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := t4Detail(tt.winner, tt.detected, tt.revertMS, tt.hasRevert)
+			got := raceDetail(tt.winner, tt.detected, tt.revertMS, tt.hasRevert)
 			if got != tt.want {
-				t.Errorf("t4Detail(%q, %v, %d, %v) = %q, want %q",
+				t.Errorf("raceDetail(%q, %v, %d, %v) = %q, want %q",
 					tt.winner, tt.detected, tt.revertMS, tt.hasRevert, got, tt.want)
 			}
 		})

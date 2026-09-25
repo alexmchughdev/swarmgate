@@ -236,8 +236,8 @@ func run(ctx context.Context, deps Deps, cfg config.Config, wake chan struct{}, 
 	}
 }
 
-// warnDropped surfaces telemetry loss: a campaign whose recorder dropped
-// events is invalid, and that must be visible from the operational log.
+// warnDropped surfaces telemetry loss: a run whose recorder dropped events
+// is invalid, and that must be visible from the operational log.
 // Warns once when drops first appear and again only when the count rises
 // further, not on every subsequent cycle for the rest of the process's
 // life with an unchanged count.
@@ -388,7 +388,7 @@ func cycle(ctx context.Context, deps Deps, cfg config.Config, st *cycleState, ru
 		applied = append(applied, c.Spec.Name)
 	}
 	if len(pending) > 0 {
-		// FR17: record believed state so a mid-apply failure is
+		// Record believed state so a mid-apply failure is
 		// distinguishable from silent divergence in later analysis.
 		emit(telemetry.Event{
 			Stage: telemetry.StageError,

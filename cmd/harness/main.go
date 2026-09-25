@@ -1,4 +1,4 @@
-// Command harness drives evaluation scenarios against a running swarmgate instance.
+// Command harness drives measurement scenarios against a running swarmgate instance.
 package main
 
 import (

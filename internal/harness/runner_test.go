@@ -21,7 +21,7 @@ func TestRunWritesExactCSV(t *testing.T) {
 		start := base.Add(time.Duration(run) * time.Second)
 		end := start.Add(500 * time.Millisecond)
 		return Row{
-			Scenario:   "t1",
+			Scenario:   "scale",
 			Condition:  "scale=1;changes=1;events=on",
 			Run:        run,
 			TStart:     start,
@@ -46,9 +46,9 @@ func TestRunWritesExactCSV(t *testing.T) {
 		t.Fatalf("ReadFile: %v", err)
 	}
 	want := "scenario,condition,run,t_start,t_end,duration_ms,outcome,detail\n" +
-		"t1,scale=1;changes=1;events=on,1,2026-07-12T10:00:01Z,2026-07-12T10:00:01.5Z,500,ok,\n" +
-		"t1,scale=1;changes=1;events=on,2,2026-07-12T10:00:02Z,2026-07-12T10:00:02.5Z,500,ok,\n" +
-		"t1,scale=1;changes=1;events=on,3,2026-07-12T10:00:03Z,2026-07-12T10:00:03.5Z,500,ok,\n"
+		"scale,scale=1;changes=1;events=on,1,2026-07-12T10:00:01Z,2026-07-12T10:00:01.5Z,500,ok,\n" +
+		"scale,scale=1;changes=1;events=on,2,2026-07-12T10:00:02Z,2026-07-12T10:00:02.5Z,500,ok,\n" +
+		"scale,scale=1;changes=1;events=on,3,2026-07-12T10:00:03Z,2026-07-12T10:00:03.5Z,500,ok,\n"
 	if string(got) != want {
 		t.Fatalf("csv content =\n%s\nwant\n%s", got, want)
 	}
@@ -61,7 +61,7 @@ func TestOpenCSVWriterHeaderOnlyOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenCSVWriter (1st): %v", err)
 	}
-	if err := w1.Write(Row{Scenario: "t1", Run: 1, Outcome: "ok"}); err != nil {
+	if err := w1.Write(Row{Scenario: "scale", Run: 1, Outcome: "ok"}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 	if err := w1.Close(); err != nil {
@@ -72,7 +72,7 @@ func TestOpenCSVWriterHeaderOnlyOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenCSVWriter (2nd, append): %v", err)
 	}
-	if err := w2.Write(Row{Scenario: "t1", Run: 2, Outcome: "ok"}); err != nil {
+	if err := w2.Write(Row{Scenario: "scale", Run: 2, Outcome: "ok"}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 	if err := w2.Close(); err != nil {

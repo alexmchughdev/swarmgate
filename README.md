@@ -15,22 +15,12 @@ Pre-alpha, actively built. What that means concretely:
   (static-key and keyless signature verification, SLSA attestation
   requirements, per-service and abort-cycle modes) are implemented and
   covered by unit and integration tests — `make check` is green.
-- Every major piece has been manually verified against a **real** Docker
-  Swarm cluster and a **real** cosign-signed image pipeline, not just unit
-  tests — see `docs/build-log.md` for the specific commands and captured
-  output. The Quickstart below is one of those verified paths.
-- A full multi-node evaluation campaign has since been run against a real
-  4-node Swarm cluster (3 compute nodes + a private registry): convergence
-  timing across a scale/changes matrix, drift detection and repair, fault
-  injection (process/node kill across 4 targets), TOCTOU races against an
-  out-of-band operator mutation, registry-latency sensitivity, and gate
-  correctness under both `gate.mode`s — some 1,700+ measured runs in total,
-  zero false positives across every fault-injection-style scenario. A
-  separate ArgoCD/RKE2 reference campaign reproduces the convergence-timing
-  and drift scenarios against a different GitOps controller for comparison.
-- `swarmgate status` and the backoff/resilience behavior (C32–C33) are the
-  most recently landed pieces; give them a harder look before relying on
-  them under load.
+- Every major piece has also been manually verified against a **real**
+  Docker Swarm cluster and a **real** cosign-signed image pipeline, not
+  just unit tests. The Quickstart below is one of those verified paths.
+- `swarmgate status` and the backoff/resilience behavior are the most
+  recently landed pieces; give them a harder look before relying on them
+  under load.
 - No release binaries are published yet (`make release` exists; nothing has
   been tagged).
 
@@ -103,42 +93,6 @@ NAME     STATE      DIGEST        LAST_RECONCILE        COMMIT
 demo_web  converged  <digest>      2026-...              <commit sha>
 ```
 
-### Reproducing a T1 convergence campaign
-
-T1 measures push-to-converged latency by repeatedly bumping a service's
-image tag. This is the exact command run to verify it (see
-`docs/build-log.md`, Phase 3 gate) — it assumes the same setup as the
-Quickstart above, with swarmgate already running against `swarmgate.yaml`:
-
-```sh
-./dist/harness t1 \
-  --repo /tmp/swarmgate-quickstart/clone \
-  --stack quickstart \
-  --scale 1 \
-  --changes 1 \
-  --events-file /tmp/swarmgate-quickstart/events.jsonl \
-  --out results.csv \
-  -n 3
-```
-
-Real output from this exact command against a fresh clone:
-
-```
-scenario,condition,run,t_start,t_end,duration_ms,outcome,detail
-t1,scale=1;changes=1;,1,2026-07-12T21:43:35.645518804Z,2026-07-12T21:43:40.103434Z,4457,ok,
-t1,scale=1;changes=1;,2,2026-07-12T21:43:40.152017493Z,2026-07-12T21:43:53.898128Z,13746,ok,
-t1,scale=1;changes=1;,3,2026-07-12T21:43:53.908498523Z,2026-07-12T21:44:05.603677Z,11695,ok,
-```
-
-`--push` defaults to `true`, which is correct here since `--repo` has a
-real remote (`bare.git`) that swarmgate actually polls; only pass
-`--push=false` if `--repo` has no remote at all (swarmgate would then
-never see the harness's local-only commits). See `scripts/README.md` for
-every harness scenario (t1–t6 against swarmgate itself; t8–t9 against
-ArgoCD, for a quantitative reference point on the same measurements) and
-`analysis/README.md` for turning a campaign's `results.csv` into a summary
-table.
-
 ## Build
 
 ```sh
@@ -199,8 +153,8 @@ When `gate.enabled` is true, every change is verified against
 identities, optionally requiring a SLSA v1 provenance attestation) before
 it's applied — see `internal/gate` and `pipeline/README.md` for the
 fixture image pipeline used to test it, and `scripts/README.md`'s
-`harness t6` section for gate-specific scenarios (signed, unsigned, wrong
-key, missing attestation, and a registry-side tag-swap race).
+`harness verify` section for gate-specific scenarios (signed, unsigned,
+wrong key, missing attestation, and a registry-side tag-swap race).
 
 ```yaml
 # gate-policy.yaml
@@ -221,13 +175,6 @@ builder_id: ""                        # required iff require_attestation is
 
 ## Docs
 
-- `docs/threat-model.md` — trust boundaries, what's been hardened against,
-  and what's a documented limitation rather than a fix.
-- `docs/deviations.md` — deliberate departures from the original plan,
-  with the reason each was forced.
-- `docs/build-log.md` / `docs/contentions.md` — the running build history
-  and every architectural decision made along the way (untracked; ask if
-  you want them committed).
 - `scripts/README.md` — every `scripts/` and `harness` tool.
 - `pipeline/README.md` — the signed/unsigned test image fixtures.
-- `analysis/README.md` — turning harness campaign output into tables.
+- `analysis/README.md` — turning harness output into summary tables.

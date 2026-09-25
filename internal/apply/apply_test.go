@@ -39,6 +39,11 @@ type fakeServiceAPI struct {
 	netCreateErr     error
 	netInspectErr    error
 	inspectedNetIDs  []string
+
+	existingConfigs []swarm.Config
+	existingSecrets []swarm.Secret
+	configListErr   error
+	secretListErr   error
 }
 
 func (f *fakeServiceAPI) NetworkList(_ context.Context, _ network.ListOptions) ([]network.Summary, error) {
@@ -58,6 +63,14 @@ func (f *fakeServiceAPI) NetworkCreate(_ context.Context, name string, options n
 func (f *fakeServiceAPI) NetworkInspect(_ context.Context, networkID string, _ network.InspectOptions) (network.Inspect, error) {
 	f.inspectedNetIDs = append(f.inspectedNetIDs, networkID)
 	return network.Inspect{}, f.netInspectErr
+}
+
+func (f *fakeServiceAPI) ConfigList(_ context.Context, _ swarm.ConfigListOptions) ([]swarm.Config, error) {
+	return f.existingConfigs, f.configListErr
+}
+
+func (f *fakeServiceAPI) SecretList(_ context.Context, _ swarm.SecretListOptions) ([]swarm.Secret, error) {
+	return f.existingSecrets, f.secretListErr
 }
 
 func (f *fakeServiceAPI) ServiceCreate(_ context.Context, service swarm.ServiceSpec, _ swarm.ServiceCreateOptions) (swarm.ServiceCreateResponse, error) {
@@ -136,7 +149,7 @@ func TestCreateRefusesWithoutManagedLabel(t *testing.T) {
 }
 
 func TestUpdatePreservesUnmodelledFields(t *testing.T) {
-	grace := 42 * time.Second
+	oldGrace := 42 * time.Second
 	api := &fakeServiceAPI{
 		inspectSvc: swarm.Service{
 			ID:   "svc-id",
@@ -149,7 +162,8 @@ func TestUpdatePreservesUnmodelledFields(t *testing.T) {
 				TaskTemplate: swarm.TaskSpec{
 					ContainerSpec: &swarm.ContainerSpec{
 						Image:           "registry.example.com/app@sha256:old",
-						StopGracePeriod: &grace,
+						StopGracePeriod: &oldGrace,
+						DNSConfig:       &swarm.DNSConfig{Nameservers: []string{"10.0.0.53"}},
 					},
 					Placement: &swarm.Placement{Constraints: []string{"node.role==worker"}},
 				},
@@ -159,6 +173,12 @@ func TestUpdatePreservesUnmodelledFields(t *testing.T) {
 	}
 	a := &SwarmApplier{api: api}
 	s := managedSpec()
+	// StopGracePeriod and Placement are modelled fields: this update's own
+	// desired values (differing from what's inspected above) must
+	// overwrite the live service's, not preserve it — the mirror
+	// assertion of the "unmodelled fields survive" ones below.
+	s.StopGracePeriod = 7 * time.Second
+	s.Placement = &spec.PlacementSpec{Constraints: []string{"node.role==manager"}}
 
 	if err := a.Apply(context.Background(), Change{Action: ActionUpdate, Spec: s}); err != nil {
 		t.Fatalf("Apply() error = %v", err)
@@ -203,12 +223,17 @@ func TestUpdatePreservesUnmodelledFields(t *testing.T) {
 		t.Errorf("ports = %+v, want %+v", got.EndpointSpec.Ports, desired.EndpointSpec.Ports)
 	}
 
-	// Unmodelled fields must survive.
-	if got.TaskTemplate.ContainerSpec.StopGracePeriod == nil || *got.TaskTemplate.ContainerSpec.StopGracePeriod != grace {
-		t.Error("StopGracePeriod was not carried over")
+	// Modelled fields overwrite the live service's.
+	if got.TaskTemplate.ContainerSpec.StopGracePeriod == nil || *got.TaskTemplate.ContainerSpec.StopGracePeriod != 7*time.Second {
+		t.Errorf("StopGracePeriod = %v, want the desired 7s to overwrite the inspected 42s", got.TaskTemplate.ContainerSpec.StopGracePeriod)
 	}
-	if !reflect.DeepEqual(got.TaskTemplate.Placement, &swarm.Placement{Constraints: []string{"node.role==worker"}}) {
-		t.Errorf("placement = %+v, want the inspected constraint", got.TaskTemplate.Placement)
+	if !reflect.DeepEqual(got.TaskTemplate.Placement, &swarm.Placement{Constraints: []string{"node.role==manager"}}) {
+		t.Errorf("placement = %+v, want the desired constraint to overwrite the inspected one", got.TaskTemplate.Placement)
+	}
+
+	// Unmodelled fields must survive untouched.
+	if !reflect.DeepEqual(got.TaskTemplate.ContainerSpec.DNSConfig, &swarm.DNSConfig{Nameservers: []string{"10.0.0.53"}}) {
+		t.Errorf("DNSConfig = %+v, want it carried over from the inspected spec", got.TaskTemplate.ContainerSpec.DNSConfig)
 	}
 	if got.EndpointSpec.Mode != swarm.ResolutionModeDNSRR {
 		t.Errorf("endpoint mode = %q, want %q", got.EndpointSpec.Mode, swarm.ResolutionModeDNSRR)

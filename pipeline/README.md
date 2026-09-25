@@ -1,8 +1,8 @@
 # Test image pipeline
 
-Builds, signs, and pushes the image variants the gate integration tests and
-the t6 harness scenarios verify against. Not part of the swarmgate binary —
-this is fixture infrastructure for exercising `internal/gate`.
+Builds, signs, and pushes the image variants the gate integration tests
+and the harness verify scenario check against. Not part of the swarmgate
+binary — this is fixture infrastructure for exercising `internal/gate`.
 
 ```
 ./pipeline/build.sh --registry <host:port>
@@ -27,8 +27,9 @@ Each is pushed as `<registry>/swarmgate-test/<variant>:v1`.
 `unsigned` builds from distinct content (`hello-unsigned.txt`, not
 `hello.txt`) so its digest is never accidentally identical to a signed
 variant's — the other four share one digest since they're built from
-identical content, which the t6 harness's `tag-repoint` scenario relies on
-`unsigned` differing from to prove anything by retagging onto it.
+identical content, which the harness verify scenario's `tag-repoint`
+case relies on `unsigned` differing from to prove anything by retagging
+onto it.
 
 `pipeline/keys/` and `pipeline/signing-config.json` are generated on first
 run and gitignored — they're fixture material, not secrets worth

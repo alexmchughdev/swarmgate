@@ -9,16 +9,16 @@ import (
 )
 
 func init() {
-	register(scenarioCmd{name: "t3", bind: bindT3})
+	register(scenarioCmd{name: "fault", bind: bindFault})
 }
 
-func bindT3(fs *flag.FlagSet, sf *sharedFlags) func() error {
+func bindFault(fs *flag.FlagSet, sf *sharedFlags) func() error {
 	hostsConfigPath := fs.String("hosts-config", "", "path to a YAML file mapping role -> {kill, restore} shell commands (required)")
 	target := fs.String("target", "", "role to fault, e.g. worker1|manager|reconciler (must be a key in --hosts-config; required)")
 	restoreAfter := fs.Duration("restore-after", 0, "restore the target after this long regardless of convergence; 0 = restore once at scenario end only")
 	repo := fs.String("repo", "", "path to an existing working-tree git clone the harness commits to (required)")
-	stack := fs.String("stack", "t3", "stack name; file is <stack>.yaml at the repo root")
-	// Default matches t1ServiceName(0): this scenario always pushes exactly
+	stack := fs.String("stack", "fault", "stack name; file is <stack>.yaml at the repo root")
+	// Default matches scaleServiceName(0): this scenario always pushes exactly
 	// one service, so there is no scale/changes flag to derive it from.
 	service := fs.String("service", "web1", "compose service key within the stack")
 	dockerHost := fs.String("docker-host", "", "docker engine host for the post-converged verification inspect; empty = environment/socket default, ssh://user@host also supported")
@@ -42,7 +42,7 @@ func bindT3(fs *flag.FlagSet, sf *sharedFlags) func() error {
 		if err != nil {
 			return err
 		}
-		if err := harness.ValidateT3Target(hosts, *target); err != nil {
+		if err := harness.ValidateFaultTarget(hosts, *target); err != nil {
 			return err
 		}
 
@@ -50,7 +50,7 @@ func bindT3(fs *flag.FlagSet, sf *sharedFlags) func() error {
 		if *tags != "" {
 			tagList = strings.Split(*tags, ",")
 		}
-		cfg := harness.T3Config{
+		cfg := harness.FaultConfig{
 			Repo: *repo, Stack: *stack, Service: *service,
 			Hosts: hosts, Target: *target, RestoreAfter: *restoreAfter,
 			EventsFile: sf.eventsFile, DockerHost: *dockerHost, Label: sf.label,
@@ -62,6 +62,6 @@ func bindT3(fs *flag.FlagSet, sf *sharedFlags) func() error {
 			return err
 		}
 		defer out.Close()
-		return harness.RunT3(cfg, sf.n, out)
+		return harness.RunFault(cfg, sf.n, out)
 	}
 }
