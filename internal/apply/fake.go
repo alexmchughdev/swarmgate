@@ -4,6 +4,8 @@ import (
 	"context"
 	"slices"
 	"sync"
+
+	"github.com/alexmchughdev/swarmgate/internal/spec"
 )
 
 // FakeApplier is an in-memory Applier for loop tests. It records applied
@@ -12,6 +14,7 @@ type FakeApplier struct {
 	mu      sync.Mutex
 	applied []Change
 	errs    map[string]error
+	current map[string]spec.ServiceSpec
 }
 
 var _ Applier = (*FakeApplier)(nil)
@@ -35,6 +38,15 @@ func (f *FakeApplier) Apply(_ context.Context, c Change) error {
 		return err
 	}
 	f.applied = append(f.applied, c)
+	if f.current == nil {
+		f.current = make(map[string]spec.ServiceSpec)
+	}
+	switch c.Action {
+	case ActionCreate, ActionUpdate:
+		f.current[c.Spec.Name] = c.Spec
+	case ActionRemove:
+		delete(f.current, c.Spec.Name)
+	}
 	return nil
 }
 
@@ -43,4 +55,12 @@ func (f *FakeApplier) Applied() []Change {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return slices.Clone(f.applied)
+}
+
+// Current returns the fake cluster's current spec for name, if present.
+func (f *FakeApplier) Current(name string) (spec.ServiceSpec, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s, ok := f.current[name]
+	return s, ok
 }

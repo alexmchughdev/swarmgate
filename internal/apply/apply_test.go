@@ -69,6 +69,11 @@ func (f *fakeServiceAPI) ConfigList(_ context.Context, _ swarm.ConfigListOptions
 	return f.existingConfigs, f.configListErr
 }
 
+func (f *fakeServiceAPI) ConfigCreate(_ context.Context, config swarm.ConfigSpec) (swarm.ConfigCreateResponse, error) {
+	f.existingConfigs = append(f.existingConfigs, swarm.Config{ID: "config-" + config.Name, Spec: config})
+	return swarm.ConfigCreateResponse{ID: "config-" + config.Name}, nil
+}
+
 func (f *fakeServiceAPI) SecretList(_ context.Context, _ swarm.SecretListOptions) ([]swarm.Secret, error) {
 	return f.existingSecrets, f.secretListErr
 }
@@ -127,6 +132,23 @@ func TestCreatePassesThroughToSwarm(t *testing.T) {
 	}
 	if api.createSpec.Annotations.Labels[spec.ManagedLabel] != "true" {
 		t.Errorf("created spec is missing %s=true", spec.ManagedLabel)
+	}
+}
+
+func TestCreateCreatesMissingDeclaredConfig(t *testing.T) {
+	api := &fakeServiceAPI{}
+	a := &SwarmApplier{api: api}
+	s := managedSpec()
+	s.Configs = []spec.FileRef{{Source: "app_v2", Target: "/etc/app.conf", Mode: 0444}}
+	payload := spec.ConfigSpec{Name: "app_v2", Data: []byte("version two")}
+	if err := a.Apply(context.Background(), Change{Action: ActionCreate, Spec: s, ConfigData: map[string]spec.ConfigSpec{"app_v2": payload}}); err != nil {
+		t.Fatal(err)
+	}
+	if api.createSpec == nil || len(api.createSpec.TaskTemplate.ContainerSpec.Configs) != 1 {
+		t.Fatalf("created service spec = %+v", api.createSpec)
+	}
+	if len(api.existingConfigs) != 1 || string(api.existingConfigs[0].Spec.Data) != "version two" {
+		t.Fatalf("created configs = %+v", api.existingConfigs)
 	}
 }
 

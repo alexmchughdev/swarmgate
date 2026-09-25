@@ -15,8 +15,9 @@ type BindMountAllowance struct {
 }
 
 // resolvePathWithinRoot resolves path and reports whether it is contained by
-// an allowed directory root or exactly equals an allowed non-directory entry.
-// Both the candidate and entries are symlink-resolved before comparison.
+// an allowed directory root. Roots must be directories: single files and
+// sockets belong in volume_bind_mounts, which enforces read-only mode. Both
+// the candidate and roots are symlink-resolved before comparison.
 func resolvePathWithinRoot(path string, roots []string) (string, error) {
 	if !filepath.IsAbs(path) {
 		return "", fmt.Errorf("bind source %q must be an absolute path", path)
@@ -41,17 +42,14 @@ func resolvePathWithinRoot(path string, roots []string) (string, error) {
 			return "", fmt.Errorf("stat volume_bind_roots entry %q: %w", root, err)
 		}
 		if !info.IsDir() {
-			if realPath == rootReal {
-				return realPath, nil
-			}
-			continue
+			return "", fmt.Errorf("volume_bind_roots entry %q is not a directory; use an exact read-only volume_bind_mounts entry for a single file or socket", root)
 		}
 		rel, err := filepath.Rel(rootReal, realPath)
 		if err == nil && rel != ".." && (len(rel) < 3 || rel[:3] != ".."+string(filepath.Separator)) {
 			return realPath, nil
 		}
 	}
-	return "", fmt.Errorf("bind source %q is not within volume_bind_roots", path)
+	return "", fmt.Errorf("bind source %q resolves to %q outside configured volume_bind_roots", path, realPath)
 }
 
 func resolveExactBindMount(path string, readOnly bool, allowances []BindMountAllowance) (string, bool, error) {

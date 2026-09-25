@@ -144,6 +144,7 @@ var envOverrides = []struct {
 	{"SWARMGATE_GIT_SSH_KEY_FILE", func(r *rawConfig, v string) error { r.Git.SSHKeyFile = v; return nil }},
 	{"SWARMGATE_GIT_INTERPOLATION_VARS", func(r *rawConfig, v string) error { r.Git.InterpolationVars = splitCommaList(v); return nil }},
 	{"SWARMGATE_ENV_FILE_ROOT", func(r *rawConfig, v string) error { r.EnvFileRoot = v; return nil }},
+	{"SWARMGATE_VOLUME_BIND_ROOTS", func(r *rawConfig, v string) error { r.VolumeBindRoots = splitCommaList(v); return nil }},
 	{"SWARMGATE_POLL_INTERVAL", func(r *rawConfig, v string) error { r.PollInterval = v; return nil }},
 	{"SWARMGATE_EVENTS_WAKE", func(r *rawConfig, v string) error { return setBool(&r.Events.Wake, "SWARMGATE_EVENTS_WAKE", v) }},
 	{"SWARMGATE_PRUNE", func(r *rawConfig, v string) error { return setBool(&r.Prune, "SWARMGATE_PRUNE", v) }},

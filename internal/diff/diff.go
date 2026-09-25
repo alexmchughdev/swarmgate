@@ -77,6 +77,9 @@ func changedFields(want, have spec.ServiceSpec) []string {
 	if !maps.Equal(want.Labels, have.Labels) {
 		changed = append(changed, "labels")
 	}
+	if !mapContains(have.DeployLabels, want.DeployLabels) {
+		changed = append(changed, "deploy_labels")
+	}
 	if !slices.Equal(want.Networks, have.Networks) {
 		changed = append(changed, "networks")
 	}
@@ -132,6 +135,15 @@ func changedFields(want, have spec.ServiceSpec) []string {
 		changed = append(changed, "update_config")
 	}
 	return changed
+}
+
+func mapContains(have, want map[string]string) bool {
+	for k, v := range want {
+		if have[k] != v {
+			return false
+		}
+	}
+	return true
 }
 
 func sortedKeys(m map[string]spec.ServiceSpec) []string {

@@ -19,6 +19,15 @@ const StackLabel = "swarmgate.stack"
 // keyed by qualified service name (see ServiceName).
 type DesiredState struct {
 	Services map[string]ServiceSpec
+	Configs  map[string]ConfigSpec
+}
+
+// ConfigSpec is the immutable payload for a Git file:-defined Swarm config.
+// Existing objects with this name are trusted as correct; Swarm prevents
+// changing their content after creation.
+type ConfigSpec struct {
+	Name string
+	Data []byte
 }
 
 // ObservedState is the set of swarmgate-managed services currently in the
@@ -49,6 +58,9 @@ type ServiceSpec struct {
 	// Labels retains only labels under LabelPrefix; everything else is
 	// outside swarmgate's contract and excluded from comparison.
 	Labels map[string]string
+	// DeployLabels are service-level labels from deploy.labels. Container
+	// labels remain in Labels and keep their existing swarmgate.* scope.
+	DeployLabels map[string]string
 
 	// Networks is the sorted list of attached network names, always
 	// including the stack default network <stack>_default.
@@ -80,9 +92,9 @@ type ServiceSpec struct {
 	// Volumes holds named local-driver and explicitly allowlisted bind mounts,
 	// sorted by Target. Tmpfs and non-local drivers remain unsupported.
 	Volumes []VolumeMount
-	// Configs and Secrets reference cluster objects that must already
-	// exist (external only — swarmgate never creates or reads their
-	// content); both are sorted by Target.
+	// Configs and Secrets reference named cluster objects, sorted by Target.
+	// File-defined configs carry their Git-commit payload in DesiredState;
+	// external configs and all secrets must already exist in the cluster.
 	Configs []FileRef
 	Secrets []FileRef
 
@@ -128,6 +140,7 @@ type VolumeMount struct {
 type FileRef struct {
 	Source string // the config/secret name
 	Target string // mount path inside the container
+	Mode   uint32 // explicit permission mode; zero means the engine default
 }
 
 // RestartPolicySpec mirrors deploy.restart_policy.
