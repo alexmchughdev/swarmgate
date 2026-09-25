@@ -23,6 +23,40 @@ func loadFixture(t *testing.T, stack string) source.StackFile {
 	return source.StackFile{Name: stack, Content: content}
 }
 
+func TestParseEnvFileHostRoot(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "app.env"), []byte("FROM_FILE=resolved\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := source.StackFile{Name: "app", Content: []byte("services:\n  web:\n    image: nginx:1.27\n    env_file: app.env\n")}
+	t.Run("valid resolution", func(t *testing.T) {
+		got, err := Parse([]source.StackFile{f}, nil, root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Services["app_web"].Env["FROM_FILE"] != "resolved" {
+			t.Fatalf("Env = %#v", got.Services["app_web"].Env)
+		}
+	})
+	t.Run("missing file", func(t *testing.T) {
+		missing := source.StackFile{Name: "app", Content: []byte("services:\n  web:\n    image: nginx:1.27\n    env_file: missing.env\n")}
+		if _, err := Parse([]source.StackFile{missing}, nil, root); err == nil || !strings.Contains(err.Error(), "env_file") {
+			t.Fatalf("Parse error = %v, want missing env_file", err)
+		}
+	})
+	t.Run("path escape", func(t *testing.T) {
+		escape := source.StackFile{Name: "app", Content: []byte("services:\n  web:\n    image: nginx:1.27\n    env_file: ../outside.env\n")}
+		if _, err := Parse([]source.StackFile{escape}, nil, root); err == nil || !strings.Contains(err.Error(), "escapes env_file_root") {
+			t.Fatalf("Parse error = %v, want path escape", err)
+		}
+	})
+	t.Run("unconfigured root", func(t *testing.T) {
+		if _, err := Parse([]source.StackFile{f}, nil); err == nil || !strings.Contains(err.Error(), "env_file_root is configured") {
+			t.Fatalf("Parse error = %v, want clear configuration rejection", err)
+		}
+	})
+}
+
 func TestParseNormalForm(t *testing.T) {
 	got, err := Parse([]source.StackFile{
 		loadFixture(t, "alpha"),
@@ -374,7 +408,7 @@ volumes:
 			wantErr: `unsupported compose field "volumes.data"`,
 		},
 		{
-			name: "env_file always rejected: no working directory to resolve it against",
+			name: "env_file rejected when env_file_root is unset",
 			yaml: `
 services:
   web:
@@ -382,7 +416,7 @@ services:
     env_file:
       - .env
 `,
-			wantErr: "env_file is not supported",
+			wantErr: "env_file_root is configured",
 		},
 		{
 			name: "configs: external reference accepted",

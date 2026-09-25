@@ -342,7 +342,7 @@ unsigned digest, computes an image-drift update, and rejects it again —
 the originally deployed (signed) digest never changes for as long as the
 tag stays pointed at unsigned content.
 
-## harness refconverge
+## harness refConverge
 
 ArgoCD/RKE2 quantitative reference, equivalent to the `scale` scenario:
 reproduces `scale`'s scale/changes convergence-timing matrix against ArgoCD
@@ -361,10 +361,10 @@ series of runs must share one `--stack`, sequentially, the same way
 `scale`'s own `--stack` stays fixed across its scale/changes sweep).
 
 ```sh
-./dist/harness refconverge \
+./dist/harness refConverge \
   --repo /path/to/argocd-watched/clone \
-  --stack refconverge \
-  --app-name refconverge \
+  --stack refConverge \
+  --app-name refConverge \
   --namespace argocd \
   --scale 10 \
   --changes 5 \
@@ -383,12 +383,12 @@ series of runs must share one `--stack`, sequentially, the same way
   reconciliation timer (minutes by default), which is fine for measuring
   the poll-only case specifically but impractical for a full run's
   wall-clock time otherwise.
-- No `--events-file`: `refconverge` (and `refdrift`, below) poll ArgoCD's
+- No `--events-file`: `refConverge` (and `refDrift`, below) poll ArgoCD's
   own status instead of tailing swarmgate telemetry, so `--events-file` is
   not required for these two scenarios specifically (every other scenario
   still requires it).
 
-## harness refdrift
+## harness refDrift
 
 ArgoCD/RKE2 quantitative reference, equivalent to the `drift` scenario:
 drift detection and repair against ArgoCD instead of swarmgate. Pushes a
@@ -401,10 +401,10 @@ under test, the direct analogue of swarmgate's reconcile loop needing no
 separate trigger to correct drift once noticed).
 
 ```sh
-./dist/harness refdrift \
+./dist/harness refDrift \
   --repo /path/to/argocd-watched/clone \
-  --stack refconverge \
-  --app-name refconverge \
+  --stack refConverge \
+  --app-name refConverge \
   --namespace argocd \
   --drift replicas \
   --deployment web1 \
@@ -419,7 +419,7 @@ separate trigger to correct drift once noticed).
 - `--drift replicas|image|env|removed` — the four `drift` kinds with a
   direct native K8s equivalent (`kubectl scale`/`set image`/`set env`/
   `delete`, respectively). `drift`'s fifth kind, `unmanaged`, has no
-  `refdrift` implementation: it tests something much closer to
+  `refDrift` implementation: it tests something much closer to
   true-by-construction given how ArgoCD scopes "managed" (its own
   Application-tracked resources plus an auto-applied ownership label, not
   a broader always-on scan the way swarmgate's `swarmgate.managed=true`

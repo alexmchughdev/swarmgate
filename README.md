@@ -121,6 +121,7 @@ git:
                                        # a listed variable resolves to — only add
                                        # names every stack-file author is meant
                                        # to see the value of.
+env_file_root: "/datavol/env"         # optional host directory for service env_file paths
 poll_interval: "30s"                  # Go duration, default 30s
 events:
   wake: true                          # default true
@@ -142,6 +143,12 @@ stage_timeout: "30s"                  # default 30s; bounds each individual
                                        # apply, and each apply call — a stuck
                                        # remote can't hang the whole cycle
 ```
+
+Service `env_file` entries are resolved relative to `env_file_root` on the
+swarmgate host (for example, `env_file: web.env` reads
+`/datavol/env/web.env`). The root is optional; stacks that use `env_file` are
+rejected with a configuration-specific error when it is unset. Resolved files
+must remain inside the configured root, including through symlinks.
 
 Every field also has a `SWARMGATE_*` environment override — see
 `internal/config/config.go`'s `envOverrides` table for the exact names.

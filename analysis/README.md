@@ -36,7 +36,7 @@ present in the input:
 - `drift`: one row per `condition, detail` pair, since `detail` (detect/repair)
   is a meaningful sub-grouping for drift (same columns as scale plus `detail`).
 - any other scenario present in the data (fault, race, latency, verify,
-  refconverge, refdrift): a generic fallback table using whatever `--by`
+  refConverge, refDrift): a generic fallback table using whatever `--by`
   grouping was requested, so the tool never crashes or drops data for a
   scenario without a hard-coded shape.
 

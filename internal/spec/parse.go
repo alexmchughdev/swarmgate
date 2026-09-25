@@ -131,7 +131,24 @@ const (
 // exposing the whole environment by default would let a stack file reach
 // past its own trust boundary into host secrets that have nothing to do
 // with it; a nil/empty allowlist means stack files see none of it.
-func Parse(files []source.StackFile, allowedEnvVars []string) (DesiredState, error) {
+
+func Parse(files []source.StackFile, allowedEnvVars []string, envFileRoots ...string) (DesiredState, error) {
+	root := ""
+	if len(envFileRoots) > 0 {
+		root = envFileRoots[0]
+	}
+	var resolveErrs []error
+	for i := range files {
+		resolved, err := resolveStackEnvFiles(files[i], root)
+		if err != nil {
+			resolveErrs = append(resolveErrs, fmt.Errorf("stack %q: %w", files[i].Name, err))
+			continue
+		}
+		files[i] = resolved
+	}
+	if len(resolveErrs) > 0 {
+		return DesiredState{}, errors.Join(resolveErrs...)
+	}
 	// The allowlist check runs over all files before any compose load so a
 	// single run reports every unsupported field, not just the first.
 	var errs []error
@@ -275,7 +292,7 @@ func checkServices(stack string, services *yaml.Node) []error {
 			case !allowedService[key.Value]:
 				errs = append(errs, fmt.Errorf("unsupported compose field %q in service %q", key.Value, qualified))
 			case key.Value == "env_file":
-				errs = append(errs, fmt.Errorf("service %q: env_file is not supported: swarmgate parses stack files from an in-memory git checkout with no working directory to resolve a referenced file against; use environment instead", qualified))
+				// Resolved to a host-side file before compose loading.
 			case key.Value == "deploy" && value.Kind == yaml.MappingNode:
 				for k := 0; k+1 < len(value.Content); k += 2 {
 					if sub := value.Content[k].Value; !allowedDeploy[sub] {
