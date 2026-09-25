@@ -194,7 +194,7 @@ func TestConfigAttachmentChangeRemovesAndRecreatesInOneCycle(t *testing.T) {
 	want.Configs = []spec.FileRef{{Source: "app_v2", Target: "/etc/app.conf"}}
 	want = spec.Normalize("web", want)
 
-	desired := spec.DesiredState{Services: map[string]spec.ServiceSpec{"web_app": old}}
+	desired := spec.DesiredState{Services: map[string]spec.ServiceSpec{"web_app": old}, Configs: map[string]spec.ConfigSpec{"app_v1": {Name: "app_v1", Data: []byte("v1")}}}
 	src := &fakeSource{commit: source.Commit{SHA: "commit-one"}}
 	obs := &observe.FakeObserver{}
 	obs.Set(spec.ObservedState{Services: map[string]spec.ServiceSpec{}}, nil)
@@ -212,7 +212,7 @@ func TestConfigAttachmentChangeRemovesAndRecreatesInOneCycle(t *testing.T) {
 		t.Fatal("initial service was not created")
 	}
 	obs.Set(spec.ObservedState{Services: map[string]spec.ServiceSpec{"web_app": clusterOld}}, nil)
-	desired = spec.DesiredState{Services: map[string]spec.ServiceSpec{"web_app": want}}
+	desired = spec.DesiredState{Services: map[string]spec.ServiceSpec{"web_app": want}, Configs: map[string]spec.ConfigSpec{"app_v2": {Name: "app_v2", Data: []byte("v2 payload")}}}
 	deps.Parse = func([]source.StackFile) (spec.DesiredState, error) { return desired, nil }
 	src.commit = source.Commit{SHA: "commit-two"}
 	if err := RunOnce(context.Background(), deps, testConfig(true)); err != nil {
@@ -229,6 +229,9 @@ func TestConfigAttachmentChangeRemovesAndRecreatesInOneCycle(t *testing.T) {
 	}
 	if len(conv.diffs) != 2 || len(conv.diffs[1].Removes) != 0 || len(conv.diffs[1].Creates) != 1 || !reflect.DeepEqual(conv.diffs[1].Creates[0].Configs, want.Configs) {
 		t.Fatalf("second convergence diff = %+v, want only final create", conv.diffs)
+	}
+	if payload := gotChanges[2].ConfigData["app_v2"]; string(payload.Data) != "v2 payload" {
+		t.Fatalf("recreate config payload = %+v", payload)
 	}
 	var applyEvents []telemetry.Event
 	for _, e := range rec.all() {

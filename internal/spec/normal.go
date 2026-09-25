@@ -54,6 +54,9 @@ func Normalize(stack string, s ServiceSpec) ServiceSpec {
 	if len(s.Env) == 0 {
 		s.Env = nil
 	}
+	if len(s.DeployLabels) == 0 {
+		s.DeployLabels = nil
+	}
 	if len(s.Ports) == 0 {
 		s.Ports = nil
 	}

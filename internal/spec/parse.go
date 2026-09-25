@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -64,6 +65,7 @@ var (
 		"resources":      true,
 		"placement":      true,
 		"update_config":  true,
+		"labels":         true,
 	}
 	allowedHealthcheck = map[string]bool{
 		"test":         true,
@@ -86,13 +88,12 @@ var (
 		"source": true,
 		"target": true,
 	}
+	allowedConfigRef = map[string]bool{"source": true, "target": true, "mode": true}
 	// allowedExternalObject is the top-level configs/secrets declaration
 	// shape: external only, never inline file/content/environment, so a
 	// stack file can reference a cluster object but never define one or
 	// smuggle secret material through git.
-	allowedExternalObject = map[string]bool{
-		"external": true,
-	}
+	allowedExternalObject = map[string]bool{"external": true, "name": true}
 )
 
 // deployModes are the values deploy.mode accepts.
@@ -168,7 +169,7 @@ func ParseWithRoots(files []source.StackFile, allowedEnvVars []string, envFileRo
 	}
 
 	env := allowedEnv(allowedEnvVars)
-	ds := DesiredState{Services: make(map[string]ServiceSpec)}
+	ds := DesiredState{Services: make(map[string]ServiceSpec), Configs: make(map[string]ConfigSpec)}
 	// owner tracks which stack file first claimed each qualified service
 	// name. ServiceName joins stack and service with an unescaped "_", so
 	// two different stacks can produce the same qualified name (stack
@@ -179,7 +180,17 @@ func ParseWithRoots(files []source.StackFile, allowedEnvVars []string, envFileRo
 	// a service they don't own.
 	owner := make(map[string]string)
 	for _, f := range files {
-		if err := parseStack(f, env, ds.Services, owner, bindRoots); err != nil {
+		prepared, names, configs, err := prepareStackConfigs(f)
+		if err != nil {
+			return DesiredState{}, fmt.Errorf("stack %q: %w", f.Name, err)
+		}
+		for name, config := range configs {
+			if prior, ok := ds.Configs[name]; ok && string(prior.Data) != string(config.Data) {
+				return DesiredState{}, fmt.Errorf("config %q has conflicting file content across stacks", name)
+			}
+			ds.Configs[name] = config
+		}
+		if err := parseStack(prepared, env, ds.Services, owner, bindRoots, names); err != nil {
 			return DesiredState{}, fmt.Errorf("stack %q: %w", f.Name, err)
 		}
 	}
@@ -227,10 +238,40 @@ func checkAllowedFields(stack string, content []byte) []error {
 			errs = append(errs, fmt.Errorf("unsupported compose field %q in stack %q", key.Value, stack))
 		case key.Value == "services" && value.Kind == yaml.MappingNode:
 			errs = append(errs, checkServices(stack, value)...)
-		case (key.Value == "configs" || key.Value == "secrets") && value.Kind == yaml.MappingNode:
+		case key.Value == "configs" && value.Kind == yaml.MappingNode:
+			errs = append(errs, checkConfigObjects(stack, value)...)
+		case key.Value == "secrets" && value.Kind == yaml.MappingNode:
 			errs = append(errs, checkExternalObjects(stack, key.Value, value)...)
 		case key.Value == "volumes" && value.Kind == yaml.MappingNode:
 			errs = append(errs, checkVolumeDeclarations(stack, value)...)
+		}
+	}
+	return errs
+}
+
+func checkConfigObjects(stack string, objects *yaml.Node) []error {
+	var errs []error
+	for i := 0; i+1 < len(objects.Content); i += 2 {
+		name, body := objects.Content[i].Value, resolveAlias(objects.Content[i+1])
+		if body.Kind != yaml.MappingNode {
+			continue
+		}
+		hasFile, hasExternal := false, false
+		for j := 0; j+1 < len(body.Content); j += 2 {
+			sub, value := body.Content[j].Value, resolveAlias(body.Content[j+1])
+			if sub == "file" {
+				hasFile = true
+			} else if sub == "external" {
+				hasExternal = true
+				if value.Value != "true" {
+					errs = append(errs, fmt.Errorf("config %q in stack %q: external must be true", name, stack))
+				}
+			} else if sub != "name" {
+				errs = append(errs, fmt.Errorf("unsupported compose field %q in stack %q: config %q supports file or external", "configs."+sub, stack, name))
+			}
+		}
+		if hasFile == hasExternal {
+			errs = append(errs, fmt.Errorf("config %q in stack %q must declare exactly one of file or external: true", name, stack))
 		}
 	}
 	return errs
@@ -244,6 +285,75 @@ func resolveAlias(n *yaml.Node) *yaml.Node {
 		return n.Alias
 	}
 	return n
+}
+
+func yamlValue(n *yaml.Node, key string) *yaml.Node {
+	n = resolveAlias(n)
+	if n == nil || n.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		if n.Content[i].Value == key {
+			return resolveAlias(n.Content[i+1])
+		}
+	}
+	return nil
+}
+
+// prepareStackConfigs snapshots every file:-defined config from the same Git
+// commit as its stack and rewrites file declarations to external references
+// for compose-go, which otherwise tries to read from the host filesystem.
+func prepareStackConfigs(f source.StackFile) (source.StackFile, map[string]string, map[string]ConfigSpec, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(f.Content, &doc); err != nil || len(doc.Content) == 0 {
+		return f, nil, nil, err
+	}
+	root := doc.Content[0]
+	configs := yamlValue(root, "configs")
+	names, payloads := map[string]string{}, map[string]ConfigSpec{}
+	if configs != nil && configs.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(configs.Content); i += 2 {
+			key, body := configs.Content[i].Value, resolveAlias(configs.Content[i+1])
+			if body.Kind != yaml.MappingNode {
+				continue
+			}
+			fileNode := yamlValue(body, "file")
+			if fileNode == nil {
+				continue
+			}
+			if path.IsAbs(fileNode.Value) {
+				return f, nil, nil, fmt.Errorf("config %q file %q must be relative to the stack file in Git", key, fileNode.Value)
+			}
+			filePath := path.Clean(path.Join(path.Dir(f.Path), fileNode.Value))
+			if filePath == ".." || strings.HasPrefix(filePath, "../") {
+				return f, nil, nil, fmt.Errorf("config %q file %q escapes the Git repository", key, fileNode.Value)
+			}
+			data, ok := f.Files[filePath]
+			if !ok {
+				return f, nil, nil, fmt.Errorf("config %q file %q was not read from the Git commit", key, fileNode.Value)
+			}
+			objectName := key
+			if n := yamlValue(body, "name"); n != nil && n.Value != "" {
+				objectName = n.Value
+			}
+			names[key] = objectName
+			payloads[objectName] = ConfigSpec{Name: objectName, Data: append([]byte(nil), data...)}
+			// Remove file and turn into the loader-safe external shape.
+			for j := 0; j+1 < len(body.Content); j += 2 {
+				if body.Content[j].Value == "file" {
+					body.Content = append(body.Content[:j], body.Content[j+2:]...)
+					break
+				}
+			}
+			body.Content = append(body.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "external"}, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: "true"})
+		}
+	}
+	content, err := yaml.Marshal(&doc)
+	if err != nil {
+		return f, nil, nil, err
+	}
+	f.Content = content
+	return f, names, payloads, nil
 }
 
 // checkExternalObjects validates a top-level configs:/secrets: block: every
@@ -279,7 +389,7 @@ func checkVolumeDeclarations(stack string, volumes *yaml.Node) []error {
 	var errs []error
 	for i := 0; i+1 < len(volumes.Content); i += 2 {
 		name, body := volumes.Content[i].Value, resolveAlias(volumes.Content[i+1])
-		if body.Kind == yaml.MappingNode && len(body.Content) > 0 {
+		if body.Kind == yaml.MappingNode && len(body.Content) > 0 && !(len(body.Content) == 2 && body.Content[0].Value == "driver" && resolveAlias(body.Content[1]).Value == "local") {
 			errs = append(errs, fmt.Errorf("unsupported compose field \"volumes.%s\" in stack %q: only a bare declaration is supported (named local-driver volumes only)", name, stack))
 		}
 	}
@@ -334,7 +444,11 @@ func checkServices(stack string, services *yaml.Node) []error {
 						continue
 					}
 					for k := 0; k+1 < len(item.Content); k += 2 {
-						if sub := item.Content[k].Value; !allowedFileRef[sub] {
+						allowed := allowedFileRef
+						if key.Value == "configs" {
+							allowed = allowedConfigRef
+						}
+						if sub := item.Content[k].Value; !allowed[sub] {
 							errs = append(errs, fmt.Errorf("unsupported compose field %q in service %q", key.Value+"."+sub, qualified))
 						}
 					}
@@ -349,7 +463,7 @@ func checkServices(stack string, services *yaml.Node) []error {
 // form, to out. owner records the first stack to claim each qualified
 // name across the whole Parse call, so a collision with a different
 // stack fails the parse instead of silently overwriting that service.
-func parseStack(f source.StackFile, env types.Mapping, out map[string]ServiceSpec, owner map[string]string, bindRoots []string) error {
+func parseStack(f source.StackFile, env types.Mapping, out map[string]ServiceSpec, owner map[string]string, bindRoots []string, configNames map[string]string) error {
 	details := types.ConfigDetails{
 		ConfigFiles: []types.ConfigFile{{Filename: f.Name + ".yaml", Content: f.Content}},
 		Environment: env,
@@ -378,6 +492,11 @@ func parseStack(f source.StackFile, env types.Mapping, out map[string]ServiceSpe
 		if err != nil {
 			return fmt.Errorf("service %q: %w", key, err)
 		}
+		for i := range configs {
+			if name, ok := configNames[configs[i].Source]; ok {
+				configs[i].Source = name
+			}
+		}
 		secrets, err := serviceFileRefs(secretRefsToFileRefs(s.Secrets), mapKeys(project.Secrets), "secret")
 		if err != nil {
 			return fmt.Errorf("service %q: %w", key, err)
@@ -400,6 +519,10 @@ func parseStack(f source.StackFile, env types.Mapping, out map[string]ServiceSpe
 		}
 
 		name := ServiceName(f.Name, key)
+		var deployLabels map[string]string
+		if s.Deploy != nil {
+			deployLabels = s.Deploy.Labels
+		}
 		if first, dup := owner[name]; dup && first != f.Name {
 			return fmt.Errorf("service %q collides with a service of the same qualified name already defined by stack %q", name, first)
 		}
@@ -410,6 +533,7 @@ func parseStack(f source.StackFile, env types.Mapping, out map[string]ServiceSpe
 			Replicas:        DefaultReplicas(deployReplicas(s.Deploy)),
 			Env:             serviceEnv(s.Environment),
 			Labels:          s.Labels,
+			DeployLabels:    deployLabels,
 			Networks:        serviceNetworks(project, s),
 			Ports:           ports,
 			Healthcheck:     healthcheck,
@@ -485,12 +609,19 @@ func mapKeys[K comparable, V any](m map[K]V) map[K]bool {
 // secret reference, after discarding the uid/gid/mode fields that
 // checkAllowedFields already refused to let through (allowedFileRef permits
 // only source/target).
-type rawFileRef struct{ Source, Target string }
+type rawFileRef struct {
+	Source, Target string
+	Mode           uint32
+}
 
 func configRefsToFileRefs(in []types.ServiceConfigObjConfig) []rawFileRef {
 	out := make([]rawFileRef, len(in))
 	for i, c := range in {
-		out[i] = rawFileRef{Source: c.Source, Target: c.Target}
+		var mode uint32
+		if c.Mode != nil {
+			mode = uint32(*c.Mode)
+		}
+		out[i] = rawFileRef{Source: c.Source, Target: c.Target, Mode: mode}
 	}
 	return out
 }
@@ -521,7 +652,7 @@ func serviceFileRefs(refs []rawFileRef, declared map[string]bool, kind string) (
 		if target == "" {
 			target = "/" + kind + "s/" + r.Source
 		}
-		out = append(out, FileRef{Source: r.Source, Target: target})
+		out = append(out, FileRef{Source: r.Source, Target: target, Mode: r.Mode})
 	}
 	return out, nil
 }

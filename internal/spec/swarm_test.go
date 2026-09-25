@@ -76,7 +76,8 @@ func TestFromSwarm(t *testing.T) {
 					StackLabel:        "web",
 					"swarmgate.extra": "kept",
 				},
-				Networks: []string{"web_default", "web_frontend"},
+				DeployLabels: map[string]string{"operator.example.com/notice": "dropped"},
+				Networks:     []string{"web_default", "web_frontend"},
 				Ports: []PortSpec{
 					{Target: 53, Published: 53, Protocol: "udp", Mode: "ingress"},
 					{Target: 8080, Published: 80, Protocol: "tcp", Mode: "ingress"},

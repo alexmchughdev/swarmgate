@@ -61,6 +61,32 @@ func TestParseEnvFileHostRoot(t *testing.T) {
 	})
 }
 
+func TestParseGitDefinedConfig(t *testing.T) {
+	f := source.StackFile{Name: "monitoring", Path: "stacks/00-monitoring.yml", Content: []byte(`services:
+  web:
+    image: nginx:1.27
+    configs:
+      - source: nginx_conf
+        target: /etc/nginx/entrypoint.conf
+        mode: 0555
+configs:
+  nginx_conf:
+    name: nginx_conf_v4
+    file: ./swarm-config/nginx.conf
+`), Files: map[string][]byte{"stacks/swarm-config/nginx.conf": []byte("new config")}}
+	got, err := Parse([]source.StackFile{f}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got.Configs["nginx_conf_v4"].Data) != "new config" {
+		t.Fatalf("config payload = %+v", got.Configs)
+	}
+	refs := got.Services["monitoring_web"].Configs
+	if len(refs) != 1 || refs[0].Source != "nginx_conf_v4" || refs[0].Mode != 0555 {
+		t.Fatalf("config refs = %+v", refs)
+	}
+}
+
 func TestParseEnvFileAbsolutePathsStayWithinRoot(t *testing.T) {
 	root := t.TempDir()
 	inside := filepath.Join(root, "app.env")
@@ -512,7 +538,7 @@ configs:
 			},
 		},
 		{
-			name: "configs: inline file content rejected",
+			name: "configs: file content accepted",
 			yaml: `
 services:
   web:
@@ -524,7 +550,11 @@ configs:
   myconf:
     file: ./myconf.txt
 `,
-			wantErr: `configs "myconf" must be external only`,
+			check: func(t *testing.T, svc ServiceSpec) {
+				if !reflect.DeepEqual(svc.Configs, []FileRef{{Source: "myconf", Target: "/etc/myconf"}}) {
+					t.Fatalf("Configs = %+v", svc.Configs)
+				}
+			},
 		},
 		{
 			name: "secrets: external reference accepted",
@@ -783,7 +813,7 @@ services:
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			f := source.StackFile{Name: "fields", Content: []byte(tt.yaml)}
+			f := source.StackFile{Name: "fields", Content: []byte(tt.yaml), Files: map[string][]byte{"myconf.txt": []byte("config contents")}}
 			got, err := Parse([]source.StackFile{f}, nil)
 			if tt.wantErr != "" {
 				if err == nil {

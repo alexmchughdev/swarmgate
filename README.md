@@ -157,6 +157,13 @@ or more host directories. Sources must be absolute and resolve inside one of
 those roots. Unreferenced Swarm configs and secrets are retained after a
 service replacement; cleanup remains an operator-managed task.
 
+Top-level configs may use Compose `file:` declarations. Those paths are
+relative to the stack file in the Git repository, and their bytes are read
+from the same commit as the stack. Swarm configs are immutable, so change the
+config object's name (the `_vN` convention) whenever its content changes;
+existing objects with a declared name are treated as already correct without
+content comparison. Secrets remain external-only.
+
 Every field also has a `SWARMGATE_*` environment override — see
 `internal/config/config.go`'s `envOverrides` table for the exact names.
 

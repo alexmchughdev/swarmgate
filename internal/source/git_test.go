@@ -94,6 +94,29 @@ func TestFetchReturnsStackFilesSorted(t *testing.T) {
 	}, []string{"alpha", "beta"})
 }
 
+func TestFetchCarriesConfigFilesFromEachCommit(t *testing.T) {
+	dir, wt := initTestRepo(t)
+	stack := "configs:\n  app_v1:\n    file: ./app.conf\nservices: {}\n"
+	commitFiles(t, dir, wt, "first", map[string]string{"stacks/app.yml": stack, "stacks/app.conf": "version one"})
+	src := NewGitSource(dir, "master", "stacks", "")
+	_, first, err := src.Fetch(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(first[0].Files["stacks/app.conf"]) != "version one" {
+		t.Fatalf("first config files = %#v", first[0].Files)
+	}
+	stack = "configs:\n  app_v2:\n    file: ./app.conf\nservices: {}\n"
+	commitFiles(t, dir, wt, "second", map[string]string{"stacks/app.yml": stack, "stacks/app.conf": "version two"})
+	_, second, err := src.Fetch(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(second[0].Files["stacks/app.conf"]) != "version two" {
+		t.Fatalf("second config files = %#v", second[0].Files)
+	}
+}
+
 func TestFetchPicksUpNewCommits(t *testing.T) {
 	dir, wt := initTestRepo(t)
 	first := commitFiles(t, dir, wt, "initial", map[string]string{

@@ -1,6 +1,7 @@
 package spec
 
 import (
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -72,10 +73,14 @@ func FromSwarm(s swarm.Service, networkNames map[string]string) ServiceSpec {
 		}
 		for _, c := range cs.Configs {
 			target := ""
+			var mode uint32
 			if c.File != nil {
 				target = c.File.Name
+				if c.File.Mode != 0444 {
+					mode = uint32(c.File.Mode)
+				}
 			}
-			out.Configs = append(out.Configs, FileRef{Source: c.ConfigName, Target: target})
+			out.Configs = append(out.Configs, FileRef{Source: c.ConfigName, Target: target, Mode: mode})
 		}
 		for _, sec := range cs.Secrets {
 			target := ""
@@ -124,7 +129,15 @@ func FromSwarm(s swarm.Service, networkNames map[string]string) ServiceSpec {
 
 	// Service labels, not container labels: the managed-label filter and
 	// the prune guard both operate on the service annotations.
-	out.Labels = s.Spec.Annotations.Labels
+	out.Labels = make(map[string]string)
+	out.DeployLabels = make(map[string]string)
+	for k, v := range s.Spec.Annotations.Labels {
+		if strings.HasPrefix(k, LabelPrefix) {
+			out.Labels[k] = v
+		} else if k != "com.docker.stack.namespace" {
+			out.DeployLabels[k] = v
+		}
+	}
 
 	for _, n := range s.Spec.TaskTemplate.Networks {
 		name, ok := networkNames[n.Target]
@@ -157,7 +170,14 @@ func ToSwarm(s ServiceSpec) swarm.ServiceSpec {
 
 	// Labels are taken as-is: normal form already carries ManagedLabel and
 	// StackLabel, so no re-stamping happens here.
-	out.Annotations = swarm.Annotations{Name: s.Name, Labels: s.Labels}
+	labels := make(map[string]string, len(s.Labels)+len(s.DeployLabels))
+	for k, v := range s.Labels {
+		labels[k] = v
+	}
+	for k, v := range s.DeployLabels {
+		labels[k] = v
+	}
+	out.Annotations = swarm.Annotations{Name: s.Name, Labels: labels}
 
 	cs := &swarm.ContainerSpec{Image: s.Image}
 	if len(s.Env) > 0 {
@@ -209,9 +229,10 @@ func ToSwarm(s ServiceSpec) swarm.ServiceSpec {
 	// live connection to look external objects up by name (see
 	// apply.ensureConfigsAndSecrets).
 	for _, c := range s.Configs {
+		mode := os.FileMode(c.Mode)
 		cs.Configs = append(cs.Configs, &swarm.ConfigReference{
 			ConfigName: c.Source,
-			File:       &swarm.ConfigReferenceFileTarget{Name: c.Target},
+			File:       &swarm.ConfigReferenceFileTarget{Name: c.Target, Mode: mode},
 		})
 	}
 	for _, sec := range s.Secrets {

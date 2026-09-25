@@ -19,6 +19,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
 	"github.com/go-git/go-git/v5/storage/memory"
+	"gopkg.in/yaml.v3"
 
 	"github.com/alexmchughdev/swarmgate/internal/secretfile"
 )
@@ -59,7 +60,11 @@ type Commit struct {
 // its .yml/.yaml extension stripped and doubles as the stack name.
 type StackFile struct {
 	Name    string
+	Path    string // path from the repository root to this stack file
 	Content []byte
+	// Files contains config file: payloads from the same commit, keyed by
+	// their repository-relative paths.
+	Files map[string][]byte
 }
 
 // GitSource polls a Git repository for stack files. The repository is cloned
@@ -205,6 +210,7 @@ func (s *GitSource) stackFiles(commit *object.Commit) ([]StackFile, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read tree of %s: %w", commit.Hash, err)
 	}
+	rootTree := tree
 	dir := path.Clean(strings.Trim(s.path, "/"))
 	if dir != "" && dir != "." {
 		tree, err = tree.Tree(dir)
@@ -250,7 +256,15 @@ func (s *GitSource) stackFiles(commit *object.Commit) ([]StackFile, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read %s at %s: %w", entry.Name, commit.Hash, err)
 		}
-		files = append(files, StackFile{Name: name, Content: content})
+		stackPath := entry.Name
+		if dir != "" && dir != "." {
+			stackPath = path.Join(dir, entry.Name)
+		}
+		auxiliary, err := s.stackConfigFiles(rootTree, stackPath, content, commit.Hash)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, StackFile{Name: name, Path: stackPath, Content: content, Files: auxiliary})
 	}
 	if len(errs) > 0 {
 		sort.Slice(errs, func(i, j int) bool { return errs[i].Error() < errs[j].Error() })
@@ -258,4 +272,77 @@ func (s *GitSource) stackFiles(commit *object.Commit) ([]StackFile, error) {
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Name < files[j].Name })
 	return files, nil
+}
+
+func (s *GitSource) stackConfigFiles(tree *object.Tree, stackPath string, content []byte, commit plumbing.Hash) (map[string][]byte, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(content, &doc); err != nil || len(doc.Content) == 0 {
+		return nil, nil // the spec parser reports malformed stack YAML
+	}
+	root := doc.Content[0]
+	configs := yamlMappingValue(root, "configs")
+	if configs == nil || configs.Kind != yaml.MappingNode {
+		return nil, nil
+	}
+	files := make(map[string][]byte)
+	for i := 0; i+1 < len(configs.Content); i += 2 {
+		name := configs.Content[i].Value
+		body := configs.Content[i+1]
+		if body.Kind != yaml.MappingNode {
+			continue
+		}
+		fileNode := yamlMappingValue(body, "file")
+		if fileNode == nil || fileNode.Kind != yaml.ScalarNode || fileNode.Value == "" {
+			continue
+		}
+		if path.IsAbs(fileNode.Value) {
+			return nil, fmt.Errorf("config %q file %q in %s must be relative to the stack file", name, fileNode.Value, stackPath)
+		}
+		filePath := path.Clean(path.Join(path.Dir(stackPath), fileNode.Value))
+		if filePath == ".." || strings.HasPrefix(filePath, "../") {
+			return nil, fmt.Errorf("config %q file %q escapes the Git repository", name, fileNode.Value)
+		}
+		if _, ok := files[filePath]; ok {
+			continue
+		}
+		entry, err := tree.FindEntry(filePath)
+		if err != nil {
+			return nil, fmt.Errorf("config %q file %q at %s: %w", name, fileNode.Value, commit, err)
+		}
+		if !entry.Mode.IsFile() {
+			return nil, fmt.Errorf("config %q file %q at %s is not a regular Git file", name, fileNode.Value, commit)
+		}
+		file, err := tree.TreeEntryFile(entry)
+		if err != nil {
+			return nil, fmt.Errorf("open config %q file %q at %s: %w", name, fileNode.Value, commit, err)
+		}
+		if file.Size > maxStackFileSize {
+			return nil, fmt.Errorf("config %q file %q at %s: %d bytes exceeds the %d byte file limit", name, fileNode.Value, commit, file.Size, maxStackFileSize)
+		}
+		data, err := readLimited(file, maxStackFileSize)
+		if err != nil {
+			return nil, fmt.Errorf("read config %q file %q at %s: %w", name, fileNode.Value, commit, err)
+		}
+		files[filePath] = data
+	}
+	return files, nil
+}
+
+func yamlMappingValue(n *yaml.Node, key string) *yaml.Node {
+	if n.Kind == yaml.AliasNode && n.Alias != nil {
+		n = n.Alias
+	}
+	if n.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		if n.Content[i].Value == key {
+			value := n.Content[i+1]
+			if value.Kind == yaml.AliasNode && value.Alias != nil {
+				return value.Alias
+			}
+			return value
+		}
+	}
+	return nil
 }

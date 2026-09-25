@@ -333,6 +333,11 @@ func cycle(ctx context.Context, deps Deps, cfg config.Config, st *cycleState, ru
 		emitDrift(d, st, emit, prevCycleStart)
 	}
 	changes := plan(d, cfg.Prune)
+	for i := range changes {
+		if changes[i].Action != apply.ActionRemove && len(desired.Configs) > 0 {
+			changes[i].ConfigData = desired.Configs
+		}
+	}
 
 	// Scaled by len(changes): gate.Verify checks every change in the
 	// batch, potentially one registry/tlog round trip each, so a single

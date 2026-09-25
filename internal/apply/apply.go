@@ -30,8 +30,9 @@ const (
 // translates diff.Diff into these, which keeps the applier a dumb executor
 // with no dependency on the differ.
 type Change struct {
-	Action Action
-	Spec   spec.ServiceSpec
+	Action     Action
+	Spec       spec.ServiceSpec
+	ConfigData map[string]spec.ConfigSpec
 	// Recreate pairs the config/secret-only replacement remove and create
 	// operations so the loop can preserve their dependency and await only
 	// the final created state.
@@ -55,6 +56,7 @@ type serviceAPI interface {
 	NetworkCreate(ctx context.Context, name string, options network.CreateOptions) (network.CreateResponse, error)
 	NetworkInspect(ctx context.Context, networkID string, options network.InspectOptions) (network.Inspect, error)
 	ConfigList(ctx context.Context, options swarm.ConfigListOptions) ([]swarm.Config, error)
+	ConfigCreate(ctx context.Context, config swarm.ConfigSpec) (swarm.ConfigCreateResponse, error)
 	SecretList(ctx context.Context, options swarm.SecretListOptions) ([]swarm.Secret, error)
 }
 
@@ -83,7 +85,7 @@ func NewSwarmApplier(host string) (*SwarmApplier, error) {
 func (a *SwarmApplier) Apply(ctx context.Context, c Change) error {
 	switch c.Action {
 	case ActionCreate:
-		return a.create(ctx, c.Spec)
+		return a.create(ctx, c.Spec, c.ConfigData)
 	case ActionUpdate:
 		return a.update(ctx, c.Spec)
 	case ActionRemove:
@@ -93,7 +95,7 @@ func (a *SwarmApplier) Apply(ctx context.Context, c Change) error {
 	}
 }
 
-func (a *SwarmApplier) create(ctx context.Context, s spec.ServiceSpec) error {
+func (a *SwarmApplier) create(ctx context.Context, s spec.ServiceSpec, configData map[string]spec.ConfigSpec) error {
 	// The managed label is the prune guard: a service created without it
 	// could never be removed by swarmgate again. Normal form always stamps
 	// it, so a miss means a bug upstream; fail closed rather than create
@@ -107,7 +109,7 @@ func (a *SwarmApplier) create(ctx context.Context, s spec.ServiceSpec) error {
 	}
 	desired := spec.ToSwarm(s)
 	attachByID(&desired, ids)
-	if err := a.attachConfigsAndSecrets(ctx, &desired, s); err != nil {
+	if err := a.attachConfigsAndSecrets(ctx, &desired, s, configData); err != nil {
 		return fmt.Errorf("create %q: %w", s.Name, err)
 	}
 	if _, err := a.api.ServiceCreate(ctx, desired, swarm.ServiceCreateOptions{}); err != nil {
@@ -135,7 +137,7 @@ func (a *SwarmApplier) update(ctx context.Context, s spec.ServiceSpec) error {
 	// must survive an update untouched.
 	desired := spec.ToSwarm(s)
 	attachByID(&desired, ids)
-	if err := a.attachConfigsAndSecrets(ctx, &desired, s); err != nil {
+	if err := a.attachConfigsAndSecrets(ctx, &desired, s, nil); err != nil {
 		return fmt.Errorf("update %q: %w", s.Name, err)
 	}
 	mutated := current.Spec
@@ -333,7 +335,7 @@ func (a *SwarmApplier) ensureNetworks(ctx context.Context, s spec.ServiceSpec) (
 // (see internal/spec's parse allowlist), so unlike ensureNetworks this
 // never creates one: a reference to a name with no matching live object is
 // an error, since swarmgate is not the thing that was supposed to create it.
-func (a *SwarmApplier) attachConfigsAndSecrets(ctx context.Context, desired *swarm.ServiceSpec, s spec.ServiceSpec) error {
+func (a *SwarmApplier) attachConfigsAndSecrets(ctx context.Context, desired *swarm.ServiceSpec, s spec.ServiceSpec, configData map[string]spec.ConfigSpec) error {
 	cs := desired.TaskTemplate.ContainerSpec
 	if len(s.Configs) > 0 {
 		configs, err := a.api.ConfigList(ctx, swarm.ConfigListOptions{})
@@ -347,7 +349,16 @@ func (a *SwarmApplier) attachConfigsAndSecrets(ctx context.Context, desired *swa
 		for _, ref := range cs.Configs {
 			id, ok := byName[ref.ConfigName]
 			if !ok {
-				return fmt.Errorf("config %q not found: external configs must already exist in the cluster", ref.ConfigName)
+				data, defined := configData[ref.ConfigName]
+				if !defined {
+					return fmt.Errorf("config %q not found: external configs must already exist in the cluster", ref.ConfigName)
+				}
+				created, err := a.api.ConfigCreate(ctx, swarm.ConfigSpec{Annotations: swarm.Annotations{Name: ref.ConfigName}, Data: data.Data})
+				if err != nil {
+					return fmt.Errorf("create config %q: %w", ref.ConfigName, err)
+				}
+				id, ok = created.ID, true
+				byName[ref.ConfigName] = id
 			}
 			ref.ConfigID = id
 		}
